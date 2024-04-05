@@ -215,3 +215,5 @@ class MNISTLitModule(LightningModule):
 
 if __name__ == "__main__":
     _ = MNISTLitModule(None, None, None, None)
+
+import fgvc.data.fgcv_datasets.fgvc_datasets.PlantTraitsDataset

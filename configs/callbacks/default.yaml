@@ -8,15 +8,20 @@ defaults:
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
   filename: "epoch_{epoch:03d}"
-  monitor: "val/acc"
-  mode: "max"
+  monitor: "val/R2_loss"
+  mode: "min"
   save_last: True
   auto_insert_metric_name: False
 
 early_stopping:
-  monitor: "val/acc"
-  patience: 100
-  mode: "max"
+  monitor: "val/R2_loss"
+  patience: 7
+  mode: "min"
 
 model_summary:
   max_depth: -1
+
+lr_monitor:
+  _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  logging_interval: null 
+  log_momentum: False

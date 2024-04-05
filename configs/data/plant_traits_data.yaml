@@ -1,0 +1,57 @@
+_target_: fgvc.data.plant_traits_data.PlantTraitsDataModule
+df_train: '/home/ubuntu/FGVC11/data/PlantTrait/df_train.csv'
+df_test: '/home/ubuntu/FGVC11/data/PlantTrait/df_test.csv'
+batch_size: 16
+num_workers: 8
+pin_memory: True
+transform:
+  _target_: albumentations.Compose
+  transforms:
+    - _target_: albumentations.Normalize
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+      p: 1
+    - _target_: albumentations.geometric.resize.Resize
+      height: 490
+      width: 490
+      p: 1.0
+    - _target_: albumentations.ColorJitter
+      brightness: 0.4
+      contrast: 0.4
+      hue: 0.4
+      saturation: 0.4
+      p: 0.5
+    - _target_: albumentations.Flip
+    - _target_: albumentations.RandomRotate90
+    - _target_: albumentations.ShiftScaleRotate
+      rotate_limit: 10
+      scale_limit:
+      - 0.0
+      - 0.1
+      shift_limit: 0.025
+      p : 0.5
+val_transform:
+  _target_: albumentations.Compose
+  transforms:
+    - _target_: albumentations.Normalize
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+      p: 1
+    - _target_: albumentations.geometric.resize.Resize
+      height: 490
+      width: 490
+      p: 1.0
+
+
