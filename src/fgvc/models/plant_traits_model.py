@@ -272,7 +272,7 @@ class PlantTraitModule(LightningModule):
         y_enc = self.model.le.transform(y)
         # predicts encoded label
         pred_enc = self.model(x, x_)
-        # decode predicted label
+        # raw predicted label
         pred = self.model.le.inverse_transform(pred_enc.clone().detach())
 
         # encoded/normalized labels for loss calculation
@@ -305,7 +305,7 @@ class PlantTraitModule(LightningModule):
         y_enc = self.model.le.transform(y)
         # predicts encoded label
         pred_enc = self.model(x, x_)
-        # decode predicted label
+        # raw predicted label
         pred = self.model.le.inverse_transform(pred_enc.clone().detach())
 
         # encoded/normalized labels for loss calculation
