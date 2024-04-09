@@ -4,8 +4,8 @@
 # python train.py experiment=example
 
 defaults:
-  - override /data: plant_traits_data
-  - override /model: plant_traits_model
+  - override /data: plant_clef_data
+  - override /model: plant_clef_model
   - override /callbacks: default
   - override /trainer: gpu
   - override /logger: neptune.yaml
@@ -14,7 +14,7 @@ defaults:
 # this allows you to overwrite only specified parameters
 
 # tags: ["mnist", "simple_dense_net"]
-description: "test dinov2"
+description: "test_edgenext_small"
 
 seed: 12345
 
@@ -44,11 +44,25 @@ model:
     patience: 4
 
 data:
-  batch_size: 64
+  batch_size: 420
   num_workers: 8
 
 
 
 logger:
   neptune:
-    project: dysdsyd/plant-traits
+    project: terraclear/plant-clef
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "epoch_{epoch:03d}"
+    monitor: "val/loss"
+    mode: "min"
+    save_last: True
+    auto_insert_metric_name: False
+
+  early_stopping:
+    monitor: "val/loss"
+    patience: 5
+    mode: "min"

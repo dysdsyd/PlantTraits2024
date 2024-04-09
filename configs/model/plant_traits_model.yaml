@@ -1,20 +1,26 @@
 _target_: fgvc.models.plant_traits_model.PlantTraitModule
 
+criterion: 
+  _target_: torch.nn.MSELoss
+
 optimizer:
-  _target_: torch.optim.Adam
+  _target_: torch.optim.AdamW
   _partial_: true
-  lr: 0.001
+  lr: 1e-4
   weight_decay: 0.01
 
 scheduler:
   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
   _partial_: true
-  mode: min
-  factor: 0.1
-  patience: 4
+  mode: 'min'
+  factor: 0.5
+  patience: 5
+  verbose: True
 
 model:
-  _target_: fgvc.models.plant_traits_model.PlantCNN
+  _target_: fgvc.models.plant_traits_model.PlantDINO
+  num_targets: 6
+  trainable_backbone_layers: 4
 
 # # compile model for faster training with pytorch 2.0
 # compile: false

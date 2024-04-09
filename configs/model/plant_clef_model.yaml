@@ -1,0 +1,25 @@
+_target_: fgvc.models.plant_clef_model.PlantCLEFModule
+
+criterian:
+  _target_: torch.nn.MultiLabelSoftMarginLoss
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 0.001
+  weight_decay: 0.01
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: min
+  factor: 0.1
+  patience: 4
+
+model:
+  _target_: fgvc.models.plant_clef_model.TimmModel
+  backbone: "edgenext_small"
+  num_classes: 7806
+
+# # compile model for faster training with pytorch 2.0
+# compile: false

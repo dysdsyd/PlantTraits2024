@@ -1,0 +1,50 @@
+# @package _global_
+
+# to execute this experiment run:
+# python train.py experiment=example
+
+defaults:
+  - override /data: plant_traits_data
+  - override /model: plant_traits_model
+  - override /callbacks: default
+  - override /trainer: gpu
+  - override /logger: neptune.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+# tags: ["mnist", "simple_dense_net"]
+description: "multi-input-dinov2"
+
+seed: 12345
+
+trainer:
+  min_epochs: 10
+  max_epochs: 60
+  gradient_clip_val: 0.5
+  devices: [0,1,2,3]
+  check_val_every_n_epoch: 1
+  precision: 16-mixed
+  strategy: ddp_find_unused_parameters_true
+
+data:
+  batch_size: 128
+  num_workers: 8
+
+logger:
+  neptune:
+    project: terraclear/plant-traits
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "epoch_{epoch:03d}"
+    monitor: "val/r2"
+    mode: "max"
+    save_last: True
+    auto_insert_metric_name: False
+
+  early_stopping:
+    monitor: "val/r2"
+    patience: 5
+    mode: "max"

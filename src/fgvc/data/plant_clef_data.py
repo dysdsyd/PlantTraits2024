@@ -1,69 +1,57 @@
 import os
 import torch
 import cv2
+import pickle
 import pandas as pd
 import numpy as np
 from glob import glob
 from PIL import Image
 from tqdm.notebook import tqdm
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-from torchvision.transforms.functional import to_tensor
+
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from typing import Any, Dict, Optional, Tuple
 
 import torch
 from lightning import LightningDataModule
-from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
+from torch.utils.data import Dataset, DataLoader
+from torchvision.transforms.functional import to_tensor
 from torchvision.datasets import MNIST
 from torchvision.transforms import transforms
-from sklearn.preprocessing import StandardScaler
-
-trait_columns = [
-    "X4_mean",
-    "X11_mean",
-    "X18_mean",
-    "X50_mean",
-    "X26_mean",
-    "X3112_mean",
-]
-aux_columns = list(map(lambda x: x.replace("mean", "sd"), trait_columns))
+from sklearn.preprocessing import OneHotEncoder
 
 
-class PlantTraitsDataset(Dataset):
+class PlantCLEFDataset(Dataset):
     def __init__(
         self,
         df,
         transform=None,
+        label_encoder=None,
         return_image=True,
         return_labels=True,
-        return_metadata=True,
+        return_metadata=False,
     ):
         self.df = df
         self.transform = transform
+        self.le = label_encoder
         self.return_image = return_image
         self.return_labels = return_labels
         self.return_metadata = return_metadata
-        self.class_names = trait_columns
-        self.aux_class_names = aux_columns
+        self.metadata_cols = [
+            "organ",
+            "altitude",
+            "latitude",
+            "longitude",
+            "species",
+            "genus",
+            "family",
+        ]
         self.paths = self.df["path"].values
-
         if self.return_labels:
-            self.labels = self.df[self.class_names].values
-            self.aux_labels = self.df[self.aux_class_names].values
-
+            self.labels = self.df["species_id"].values
+            self.encoded_labels = self.le.transform(self.labels.reshape(-1, 1))
         if self.return_metadata:
-            self.metadata = self.df.drop(
-                columns=["id", "path", "split", "species"]
-                + self.class_names
-                + self.aux_class_names,
-                errors="ignore",
-            ).values
-            # 163 columns
-            assert (
-                self.metadata.shape[1] == 163
-            ), "Should be 164 metadata columns, got {self.metadata.shape[1]}"
+            self.metadata = self.df[self.metadata_cols].values
 
     def __len__(self):
         return len(self.df)
@@ -79,28 +67,46 @@ class PlantTraitsDataset(Dataset):
             data["metadata"] = torch.tensor(self.metadata[idx], dtype=torch.float32)
         if self.return_labels:
             data["label"] = torch.tensor(self.labels[idx], dtype=torch.float32)
-            data["aux_label"] = torch.tensor(self.aux_labels[idx], dtype=torch.float32)
-
+            data["encoded_label"] = torch.tensor(
+                self.encoded_labels[idx].toarray()[0], dtype=torch.int
+            )
         return data
 
 
-class PlantTraitsDataModule(LightningDataModule):
+class PlantCLEFDataModule(LightningDataModule):
     def __init__(
         self,
-        df_path: str,
+        df_train,
+        label_encoder="/home/ubuntu/FGVC11/data/PlantClef/le.pkl",
         transform=None,
         test_transform=None,
         batch_size=64,
-        num_workers=0,
+        num_workers=8,
         pin_memory=False,
         collate_fn=None,
     ):
         super().__init__()
+
+        # this line allows to access init params with 'self.hparams' attribute
+        # also ensures init params will be stored in ckpt
         self.save_hyperparameters(logger=False)
-        self.df_path = df_path
+        # load training data and splitting into train, val and test
+        self.df = pd.read_csv(df_train, delimiter=";", escapechar="/")
+        self.df_train = self.df[self.df["learn_tag"] == "train"]
+        self.df_val = self.df[self.df["learn_tag"] == "val"]
+        self.df_test = self.df[self.df["learn_tag"] == "test"]
+        # loading transforms
         self.transform = transform
         self.test_transform = test_transform
         self.collate_fn = collate_fn
+
+        # load one hot encoder for species id
+        assert label_encoder is not None, "Label encoder path is required"
+        try:
+            with open(label_encoder, "rb") as f:
+                self.le = pickle.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError("Label Encoder file not found")
 
         self.data_train: Optional[Dataset] = None
         self.data_val: Optional[Dataset] = None
@@ -108,32 +114,36 @@ class PlantTraitsDataModule(LightningDataModule):
 
     @property
     def num_classes(self):
-        return len(trait_columns)
+        return len(self.le.categories_[0])
 
     def prepare_data(self):
-        """
-        Download data if needed.
+        """Download data if needed.
+
+        Terraclear datasets manage downloading opaquely so this is unused.
+
+        DO NOT use this function to assign state (self.x = y).
         """
         pass
 
     def setup(self, stage: Optional[str] = None):
-        # split data and create datasets
-        self.df = pd.read_csv(self.df_path)
+        # load and split datasets only if not loaded already
         if not self.data_train:
-            self.data_train = PlantTraitsDataset(
-                df=self.df[self.df["split"] == "train"],
+            self.data_train = PlantCLEFDataset(
+                self.df_train,
                 transform=self.transform,
+                label_encoder=self.le,
             )
         if not self.data_val:
-            self.data_val = PlantTraitsDataset(
-                df=self.df[self.df["split"] == "val"],
+            self.data_val = PlantCLEFDataset(
+                self.df_val,
                 transform=self.test_transform,
+                label_encoder=self.le,
             )
         if not self.data_test:
-            self.data_test = PlantTraitsDataset(
-                df=self.df[self.df["split"] == "test"],
+            self.data_test = PlantCLEFDataset(
+                self.df_test,
                 transform=self.test_transform,
-                return_labels=False,
+                label_encoder=self.le,
             )
 
     def train_dataloader(self):
