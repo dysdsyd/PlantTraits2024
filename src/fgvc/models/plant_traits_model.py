@@ -114,37 +114,41 @@ class PlantDINO(nn.Module):
                 for p in self.body.blocks[i].parameters():
                     p.requires_grad = False
 
-        self.norm = nn.LayerNorm(self.body.num_features)
-        self.fc1 = nn.Linear(
-            self.body.num_features + 163, (self.body.num_features + 163) // 2
+        self.tabular = nn.Sequential(
+            nn.Linear(163, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
         )
-        self.dropout = nn.Dropout(0.5)
-        self.relu2 = nn.ReLU()
-        self.fc2 = nn.Linear((self.body.num_features + 163) // 2, num_targets)
+
+        self.reg = nn.Sequential(
+            nn.Linear(128 + self.body.num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(256, num_targets),
+        )
 
     def forward(self, x, dense_input):
         x = self.body(x)
-        x = self.norm(x)
-        x = torch.cat((x, dense_input), dim=1)
-        x = self.fc1(x)
-        x = self.dropout(x)
-        x = self.relu2(x)
-        x = self.fc2(x)
+        x_ = self.tabular(dense_input)
+        x = torch.cat([x, x_], dim=1)
+        x = self.reg(x)
         return x
 
 
 class TimmModel(nn.Module):
     def __init__(
         self,
-        backbone="swin_base_patch4_window12_384.ms_in22k",
+        backbone="swin_large_patch4_window12_384.ms_in22k_ft_in1k",
         num_classes=6,
     ):
         super().__init__()
         self.backbone = timm.create_model(
             backbone, num_classes=num_classes, pretrained=True
         )
+        self.le = LabelEncoder()
 
-    def forward(self, inputs):
+    def forward(self, inputs, extra_input=None):
         return self.backbone(inputs)
 
 
@@ -165,34 +169,6 @@ class R2Loss(nn.Module):
         )  # (B, C) -> (C,)
         r2_loss = SS_res / (SS_tot + 1e-6)  # (C,)
         return torch.mean(r2_loss)  # ()
-
-
-# class R2Metric(Metric):
-#     def __init__(self, num_classes=6):
-#         super(R2Metric, self).__init__()
-#         self.num_classes = num_classes
-#         self.reset()
-
-#     def reset(self):
-#         self.SS_res = torch.zeros(self.num_classes)  # shape: (num_classes,)
-#         self.SS_tot = torch.zeros(self.num_classes)  # shape: (num_classes,)
-#         self.num_samples = torch.tensor(0, dtype=torch.float32)  # scalar
-
-#     def forward(self, y_true, y_pred):
-#         SS_res = torch.sum((y_true - y_pred) ** 2, dim=0)  # shape: (num_classes,)
-#         SS_tot = torch.sum(
-#             (y_true - torch.mean(y_true, dim=0)) ** 2, dim=0
-#         )  # shape: (num_classes,)
-#         self.SS_res += SS_res
-#         self.SS_tot += SS_tot
-#         self.num_samples += y_true.size(0)  # scalar
-
-#     def compute(self):
-#         r2 = 1 - self.SS_res / (self.SS_tot + 1e-6)  # shape: (num_classes,)
-#         uniform_average_r2 = torch.mean(r2)  # scalar
-#         out = {f"r2_{trait_columns[i]}": r2[i].item() for i in range(self.num_classes)}
-#         out["r2"] = uniform_average_r2.item()
-#         return out
 
 
 class TCR2Score(Metric):
@@ -259,7 +235,7 @@ class PlantTraitModule(LightningModule):
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.criterion = criterion
+        self.criterion = R2Loss()  # criterion
         self.metrics = TCR2Score(num_classes=num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
