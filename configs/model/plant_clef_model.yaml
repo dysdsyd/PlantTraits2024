@@ -1,25 +1,36 @@
 _target_: fgvc.models.plant_clef_model.PlantCLEFModule
 
-criterian:
-  _target_: torch.nn.MultiLabelSoftMarginLoss
-
-optimizer:
-  _target_: torch.optim.Adam
-  _partial_: true
-  lr: 0.001
-  weight_decay: 0.01
-
-scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  _partial_: true
-  mode: min
-  factor: 0.1
-  patience: 4
+# criterian:
+#   _target_: torch.nn.MultiLabelSoftMarginLoss
+num_classes: 7806
 
 model:
   _target_: fgvc.models.plant_clef_model.TimmModel
-  backbone: "edgenext_small"
+  backbone: "edgenext_base"
   num_classes: 7806
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: True
+  lr: 0.0001
+  weight_decay: 0.01
+
+scheduler:
+  # cosine annealing
+  _target_: torch.optim.lr_scheduler.OneCycleLR
+  _partial_: true
+  max_lr: 1e-4
+  total_steps: 30000
+  pct_start: 0.1
+  anneal_strategy: 'cos'
+  div_factor: 1e1
+  final_div_factor: 1e1
+  # _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  # _partial_: true
+  # mode: min
+  # factor: 0.5
+  # patience: 4
+
 
 # # compile model for faster training with pytorch 2.0
 # compile: false

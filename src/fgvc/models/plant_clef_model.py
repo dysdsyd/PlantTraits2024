@@ -18,6 +18,12 @@ from sklearn.preprocessing import StandardScaler
 from torch.optim.lr_scheduler import OneCycleLR
 from torchvision.models import efficientnet
 from torchmetrics.regression import R2Score
+from torchmetrics.classification import MultilabelF1Score, MulticlassF1Score
+from torchmetrics.classification import (
+    MulticlassAccuracy,
+    MulticlassPrecisionRecallCurve,
+    MulticlassAveragePrecision,
+)
 
 from typing import Any, Dict, Tuple
 
@@ -66,6 +72,43 @@ import torch.nn as nn
 #         return x
 
 
+class TCBCELoss(nn.Module):
+    def __init__(self, num_classes=7806, method="bce"):
+        super().__init__()
+        self.num_classes = num_classes
+        self.method = method
+
+    def forward(self, input, target):
+        EPS = 1e-5
+        if self.method == "bce":
+            loss = -target * torch.log(input + EPS) - (1 - target) * torch.log(
+                1 - input + EPS
+            )
+        elif self.method == "weak_negatives":
+            loss = -target * torch.log(input + EPS) - (
+                (1 - target) / (self.num_classes - 1)
+            ) * torch.log(1 - input + EPS)
+
+        elif self.method == "label_smoothing":
+            loss = -target * torch.log(input + EPS) - (1 - target) * torch.log(
+                1 - input + EPS
+            )
+        else:
+            raise NotImplementedError
+        return loss.mean()
+
+
+def expected_positive_regularizer(preds, expected_num_pos, norm="2"):
+    # Assumes predictions in [0,1].
+    if norm == "1":
+        reg = torch.abs(preds.sum(1).mean(0) - expected_num_pos)
+    elif norm == "2":
+        reg = (preds.sum(1).mean(0) - expected_num_pos) ** 2
+    else:
+        raise NotImplementedError
+    return reg
+
+
 class TimmModel(nn.Module):
     def __init__(
         self,
@@ -76,28 +119,38 @@ class TimmModel(nn.Module):
         self.backbone = timm.create_model(
             backbone, num_classes=num_classes, pretrained=True
         )
-        self.sigm = nn.Sigmoid()
+        # self.sigm = nn.Sigmoid()
+        # self.softmax = nn.Softmax(dim=1)
 
     def forward(self, inputs):
-        return self.sigm(self.backbone(inputs))
+        return self.backbone(inputs)
 
 
 class PlantCLEFModule(LightningModule):
     def __init__(
         self,
         model: nn.Module,
-        criterian: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler,
-        num_classes: int = 6,
+        num_classes: int = 7806,
     ):
         super().__init__()
         self.save_hyperparameters(logger=False)
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.criterion = criterian
-        # self.metrics = R2Score(num_outputs=6, multioutput="uniform_average")
+        # self.criterion = TCBCELoss(num_classes=num_classes, method="bce")
+        self.criterion = nn.CrossEntropyLoss(reduction="mean")
+
+        self.train_ac = MulticlassAccuracy(
+            num_classes=num_classes, average="macro", topk=1
+        )
+        self.val_ac = MulticlassAccuracy(
+            num_classes=num_classes, average="macro", topk=1
+        )
+        self.test_ac = MulticlassAccuracy(
+            num_classes=num_classes, average="macro", topk=1
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -105,7 +158,10 @@ class PlantCLEFModule(LightningModule):
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         preds = self.model(batch["image"])
         loss = self.criterion(preds, batch["encoded_label"])
-        # metric = self.metrics(y, preds)
+        self.train_ac(
+                preds.detach(),
+                torch.argmax(batch["encoded_label"], dim=1)
+                )
         self.log(
             "train/loss",
             loss,
@@ -114,19 +170,23 @@ class PlantCLEFModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
-        # self.log(
-        #     "train/R2_Metric",
-        #     metric,
-        #     on_step=False,
-        #     on_epoch=True,
-        #     prog_bar=True,
-        #     sync_dist=True,
-        # )
+        self.log(
+            "train/accuracy",
+            self.train_ac,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
         return loss
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         preds = self.model(batch["image"])
         loss = self.criterion(preds, batch["encoded_label"])
+        self.val_ac(
+                preds.detach(),
+                torch.argmax(batch["encoded_label"], dim=1)
+                )
         self.log(
             "val/loss",
             loss,
@@ -135,13 +195,33 @@ class PlantCLEFModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
-           
+        self.log(
+            "val/accuracy",
+            self.val_ac,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         preds = self.model(batch["image"])
         loss = self.criterion(preds, batch["encoded_label"])
+        self.test_ac(
+                preds.detach(),
+                torch.argmax(batch["encoded_label"], dim=1)
+                )
         self.log(
             "test/loss",
             loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "test/accuracy",
+            self.test_ac,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -156,7 +236,7 @@ class PlantCLEFModule(LightningModule):
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": scheduler,
-                    "monitor": "val/loss",
+                    "monitor": "train/loss",
                     "interval": "epoch",
                     "frequency": 1,
                 },

@@ -6,16 +6,6 @@ pin_memory: True
 transform:
   _target_: albumentations.Compose
   transforms:
-    - _target_: albumentations.geometric.resize.Resize
-      height: 490
-      width: 490
-      p: 1.0
-    - _target_: albumentations.ColorJitter
-      brightness: 0.4
-      contrast: 0.4
-      hue: 0.4
-      saturation: 0.4
-      p: 0.5
     - _target_: albumentations.Flip
     - _target_: albumentations.RandomRotate90
     - _target_: albumentations.ShiftScaleRotate
@@ -25,6 +15,20 @@ transform:
       - 0.1
       shift_limit: 0.025
       p : 0.5
+    - _target_: albumentations.geometric.resize.Resize
+      height: &htile 518
+      width: &wtile 518
+      p: 1.0
+    - _target_: albumentations.ColorJitter
+      brightness: 0.4
+      contrast: 0.4
+      hue: 0.4
+      saturation: 0.4
+      p: 0.5
+    - _target_: albumentations.ImageCompression
+      quality_lower: 85
+      quality_upper: 100
+      p: 0.25
     - _target_: albumentations.Normalize
       mean:
       - 0.485
@@ -39,8 +43,8 @@ test_transform:
   _target_: albumentations.Compose
   transforms:
     - _target_: albumentations.geometric.resize.Resize
-      height: 490
-      width: 490
+      height: *htile
+      width: *wtile
       p: 1.0
     - _target_: albumentations.Normalize
       mean:

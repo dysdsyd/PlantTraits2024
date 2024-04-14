@@ -26,6 +26,7 @@ from typing import Any, Dict, Tuple
 import torch
 from lightning import LightningModule
 from typing import Any, Dict, Tuple
+from torchmetrics.regression import R2Score
 
 
 import timm
@@ -51,12 +52,12 @@ class LabelEncoder(nn.Module):
         self.mean = torch.nn.Parameter(
             torch.tensor(
                 [-0.3060, 1.1513, -0.0671, 0.1698, 0.3407, 2.7966], dtype=torch.float32
-            )
+            ), requires_grad=False
         )
         self.std = torch.nn.Parameter(
             torch.tensor(
                 [0.1226, 0.2133, 0.6449, 0.1594, 0.9975, 0.6355], dtype=torch.float32
-            )
+            ), requires_grad=False
         )
 
     def transform(self, X):
@@ -91,14 +92,24 @@ class LabelEncoder(nn.Module):
 
 
 class PlantDINO(nn.Module):
-    def __init__(self, num_targets=6, trainable_backbone_layers=4):
+    def __init__(
+        self,
+        num_targets=6,
+        train_blocks=4,
+        ckpt_path=None,
+    ):
         super(PlantDINO, self).__init__()
         self.le = LabelEncoder()
         self.train_tokens = False
-        self.trainable_backbone_layers = trainable_backbone_layers
-        self.body = torch.hub.load(
-            "facebookresearch/dinov2", "dinov2_vits14_reg", pretrained=True
+        self.train_blocks = train_blocks
+        self.body = timm.create_model(
+            "vit_base_patch14_reg4_dinov2.lvd142m",
+            pretrained=False,
+            num_classes=7806, # initialize since this model is from PlantClef
+            checkpoint_path=ckpt_path,
         )
+        self.body.reset_classifier(num_targets, 'avg')
+
         for i, layer in enumerate([self.body.patch_embed, self.body.norm]):
             for p in layer.parameters():
                 p.requires_grad = False
@@ -106,31 +117,44 @@ class PlantDINO(nn.Module):
         if not self.train_tokens:
             self.body.cls_token.requires_grad = False
             self.body.pos_embed.requires_grad = False
-            self.body.register_tokens.requires_grad = False
-            self.body.mask_token.requires_grad = False
+            self.body.reg_token.requires_grad = False
+            # self.body.mask_token.requires_grad = False
 
-        if self.trainable_backbone_layers is not None:
-            for i in range(0, len(self.body.blocks) - self.trainable_backbone_layers):
+        if self.train_blocks is not None:
+            for i in range(0, len(self.body.blocks) - self.train_blocks):
                 for p in self.body.blocks[i].parameters():
                     p.requires_grad = False
 
         self.tabular = nn.Sequential(
-            nn.Linear(163, 256),
+            nn.Linear(163, 128),
             nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(128, 64),
             nn.ReLU(),
         )
 
         self.reg = nn.Sequential(
-            nn.Linear(128 + self.body.num_features, 256),
+            nn.Linear(64 + 768, 256),
             nn.ReLU(),
             nn.Dropout(0.4),
             nn.Linear(256, num_targets),
         )
 
-    def forward(self, x, dense_input):
+    def forward(self, x):
         x = self.body(x)
-        x_ = self.tabular(dense_input)
+        # x_ = self.tabular(dense_input)
+        # x = torch.cat([x, x_], dim=1)
+        # x = self.reg(x)
+        return x
+
+    def forward_alt(self, x, x_):
+        x = self.body.forward_features(x)
+        x = self.body.forward_head(x, pre_logits=True)
+        # pooled image features B * 768
+        
+        x_ = self.tabular(x_)
+        # tabular features
+
+        # cat and regression
         x = torch.cat([x, x_], dim=1)
         x = self.reg(x)
         return x
@@ -141,6 +165,7 @@ class TimmModel(nn.Module):
         self,
         backbone="swin_large_patch4_window12_384.ms_in22k_ft_in1k",
         num_classes=6,
+        ckpt_path=None,
     ):
         super().__init__()
         self.backbone = timm.create_model(
@@ -225,7 +250,6 @@ class PlantTraitModule(LightningModule):
     def __init__(
         self,
         model: nn.Module,
-        criterion: nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler,
         num_classes: int = 6,
@@ -236,7 +260,10 @@ class PlantTraitModule(LightningModule):
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.criterion = R2Loss()  # criterion
-        self.metrics = TCR2Score(num_classes=num_classes)
+        # self.train_metrics = TCR2Score(num_classes=num_classes)
+        # self.val_metrics = TCR2Score(num_classes=num_classes)
+        self.train_metrics = R2Score(num_outputs=num_classes, multioutput='uniform_average')
+        self.val_metrics = R2Score(num_outputs=num_classes, multioutput='uniform_average')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -247,14 +274,14 @@ class PlantTraitModule(LightningModule):
         # encode label
         y_enc = self.model.le.transform(y)
         # predicts encoded label
-        pred_enc = self.model(x, x_)
+        pred_enc = self.model.forward_alt(x, x_)
         # raw predicted label
         pred = self.model.le.inverse_transform(pred_enc.clone().detach())
 
         # encoded/normalized labels for loss calculation
         loss = self.criterion(y_enc, pred_enc)
         # raw labels for metric calculation
-        metrics = self.metrics(y, pred)
+        # metrics = self.train_metrics(pred, y)
         self.log(
             "train/loss",
             loss,
@@ -263,16 +290,28 @@ class PlantTraitModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
-        for k, v in metrics.items():
-            self.log(
-                f"train/{k}",
-                v,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
-            )
+        self.train_metrics(pred, y)
+        self.log(
+            "train/r2",
+            self.train_metrics,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        # for k, v in metrics.items():
+        #     self.log(
+        #         f"train/{k}",
+        #         v,
+        #         on_step=True,
+        #         on_epoch=True,
+        #         prog_bar=True,
+        #         sync_dist=True,
+        #     )
         return loss
+
+    # def on_train_epoch_end(self):
+    #     self.train_metrics.reset()
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         # image, metadata, raw label
@@ -280,14 +319,14 @@ class PlantTraitModule(LightningModule):
         # encode label
         y_enc = self.model.le.transform(y)
         # predicts encoded label
-        pred_enc = self.model(x, x_)
+        pred_enc = self.model.forward_alt(x, x_)
         # raw predicted label
         pred = self.model.le.inverse_transform(pred_enc.clone().detach())
 
         # encoded/normalized labels for loss calculation
         loss = self.criterion(y_enc, pred_enc)
         # raw labels for metric calculation
-        metrics = self.metrics(y, pred)
+        # metrics = self.val_metrics(pred, y)
         self.log(
             "val/loss",
             loss,
@@ -296,15 +335,27 @@ class PlantTraitModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
-        for k, v in metrics.items():
-            self.log(
-                f"val/{k}",
-                v,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
-            )
+        self.val_metrics(pred, y)
+        self.log(
+            "val/r2",
+            self.val_metrics,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        # for k, v in metrics.items():
+        #     self.log(
+        #         f"val/{k}",
+        #         v,
+        #         on_step=True,
+        #         on_epoch=True,
+        #         prog_bar=True,
+        #         sync_dist=True,
+        #     )
+
+    # def on_validation_epoch_end(self):
+    #     self.val_metrics.reset()
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         pass

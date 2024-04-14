@@ -14,13 +14,13 @@ defaults:
 # this allows you to overwrite only specified parameters
 
 # tags: ["mnist", "simple_dense_net"]
-description: "multi-input-dinov2"
+description: "dinov2_4_blocks_img_tabular"
 
 seed: 12345
 
 trainer:
   min_epochs: 10
-  max_epochs: 60
+  max_epochs: 200
   gradient_clip_val: 0.5
   devices: [0,1,2,3]
   check_val_every_n_epoch: 1
@@ -28,7 +28,7 @@ trainer:
   strategy: ddp_find_unused_parameters_true
 
 data:
-  batch_size: 128
+  batch_size: 64
   num_workers: 8
 
 logger:
