@@ -1,40 +1,28 @@
 _target_: fgvc.models.plant_traits_model.PlantTraitModule
 
-# criterion: 
-#   _target_: torch.nn.MSELoss
-
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 1e-4
+  lr: 0.0008
   weight_decay: 0.01
 
 scheduler:
-  # cosine annealing
   _target_: torch.optim.lr_scheduler.OneCycleLR
   _partial_: true
   max_lr: 1e-4
-  total_steps: 3000
+  total_steps: 150
   pct_start: 0.1
   anneal_strategy: 'cos'
   div_factor: 1e1
   final_div_factor: 1e1
-  # _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  # _partial_: true
-  # mode: 'min'
-  # factor: 0.5
-  # patience: 5
-  # verbose: True
 
 model:
   _target_: fgvc.models.plant_traits_model.PlantDINO
   num_targets: 6
-  train_blocks: 4
-  ckpt_path: "/home/ubuntu/FGVC11/data/PlantClef/pretrained_models/vit_base_patch14_reg4_dinov2_lvd142m_pc24_onlyclassifier_then_all/model_best.pth.tar"
-  # _target_: fgvc.models.plant_traits_model.TimmModel
-  # backbone: edgenext_small
-  # num_targets: 6
-  # trainable_backbone_layers: 6
+  train_blocks: 2
+  # ckpt_path: "/home/ubuntu/FGVC11/data/PlantClef/pretrained_models/vit_base_patch14_reg4_dinov2_lvd142m_pc24_onlyclassifier_then_all/model_best.pth.tar"
 
+cutmix_aug: False
+blend_traits: True
 # # compile model for faster training with pytorch 2.0
 # compile: false

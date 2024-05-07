@@ -14,13 +14,13 @@ defaults:
 # this allows you to overwrite only specified parameters
 
 # tags: ["mnist", "simple_dense_net"]
-description: "dinov2_4_blocks_img_tabular"
+description: "vitb_scratch_blk_2_bld"
 
 seed: 12345
 
 trainer:
   min_epochs: 10
-  max_epochs: 200
+  max_epochs: 150
   gradient_clip_val: 0.5
   devices: [0,1,2,3]
   check_val_every_n_epoch: 1
@@ -46,5 +46,5 @@ callbacks:
 
   early_stopping:
     monitor: "val/r2"
-    patience: 5
+    patience: 20
     mode: "max"

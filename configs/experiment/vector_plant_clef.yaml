@@ -4,8 +4,8 @@
 # python train.py experiment=example
 
 defaults:
-  - override /data: plant_clef_data
-  - override /model: plant_clef_model
+  - override /data: vector_plant_clef_data
+  - override /model: vector_plant_clef_model
   - override /callbacks: default
   - override /trainer: gpu
   - override /logger: neptune.yaml
@@ -14,7 +14,7 @@ defaults:
 # this allows you to overwrite only specified parameters
 
 # tags: ["mnist", "simple_dense_net"]
-description: "dinov2-pretrained-feature-fusion"
+description: "vector_test"
 
 seed: 12345
 
@@ -22,13 +22,13 @@ trainer:
   min_epochs: 30
   max_epochs: 200
   gradient_clip_val: 0.5
-  devices: [0,1,2,3]
+  devices: [4,5,6,7]
   check_val_every_n_epoch: 1
   precision: 16-mixed
   strategy: ddp_find_unused_parameters_true
 
 data:
-  batch_size: 120
+  batch_size: 1200
   num_workers: 8
 
 

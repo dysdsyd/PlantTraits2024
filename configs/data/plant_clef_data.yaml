@@ -18,8 +18,8 @@ transform:
       shift_limit: 0.025
       p : 0.5
     - _target_: albumentations.geometric.resize.Resize
-      height: &htile 224
-      width: &wtile 224
+      height: &htile 518
+      width: &wtile 518
       p: 1.0
     - _target_: albumentations.ColorJitter
       brightness: 0.4
@@ -27,6 +27,10 @@ transform:
       hue: 0.4
       saturation: 0.4
       p: 0.5
+    - _target_: albumentations.ImageCompression
+      quality_lower: 85
+      quality_upper: 100
+      p: 0.25
     - _target_: albumentations.Normalize
       mean:
       - 0.485

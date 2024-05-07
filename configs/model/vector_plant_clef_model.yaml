@@ -1,14 +1,8 @@
-_target_: fgvc.models.plant_clef_model.PlantCLEFModule
+_target_: fgvc.models.plant_clef_model.VectorPlantCLEFModule
 
 # criterian:
 #   _target_: torch.nn.MultiLabelSoftMarginLoss
 num_classes: &num_classes 7806
-
-model:
-  _target_: fgvc.models.plant_clef_model.PlantDINO
-  num_targets: *num_classes
-  train_blocks: 2
-  ckpt_path: "/home/ubuntu/FGVC11/data/PlantClef/pretrained_models/vit_base_patch14_reg4_dinov2_lvd142m_pc24_onlyclassifier_then_all/model_best.pth.tar"
 
 optimizer:
   _target_: torch.optim.Adam

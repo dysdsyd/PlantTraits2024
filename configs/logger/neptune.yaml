@@ -5,5 +5,5 @@ neptune:
   api_key: ${oc.env:NEPTUNE_API_TOKEN} # api key is loaded from environment variable
   project: terraclear/plant-traits
   # name: ""
-  log_model_checkpoints: True
+  log_model_checkpoints: False
   prefix: ""

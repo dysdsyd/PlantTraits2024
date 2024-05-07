@@ -7,28 +7,40 @@ transform:
   _target_: albumentations.Compose
   transforms:
     - _target_: albumentations.Flip
+      p: 0.7
     - _target_: albumentations.RandomRotate90
+      p: 0.7
     - _target_: albumentations.ShiftScaleRotate
-      rotate_limit: 10
-      scale_limit:
-      - 0.0
-      - 0.1
+      rotate_limit: 45
+      scale_limit: 0.1
       shift_limit: 0.025
-      p : 0.5
+      p : 0.7
     - _target_: albumentations.geometric.resize.Resize
       height: &htile 518
       width: &wtile 518
       p: 1.0
+    - _target_: albumentations.RandomGamma
+      p: 0.7
     - _target_: albumentations.ColorJitter
-      brightness: 0.4
-      contrast: 0.4
-      hue: 0.4
-      saturation: 0.4
+      brightness: 0.2
+      contrast: 0.2
+      hue: 0.2
+      saturation: 0.2
       p: 0.5
+    - _target_: albumentations.RandomShadow
+      num_shadows_lower: 1
+      num_shadows_upper: 1
+      p: 0.5
+      shadow_dimension: 4
+      shadow_roi:
+      - 0
+      - 0
+      - 1
+      - 1
     - _target_: albumentations.ImageCompression
-      quality_lower: 85
+      quality_lower: 80
       quality_upper: 100
-      p: 0.25
+      p: 0.50
     - _target_: albumentations.Normalize
       mean:
       - 0.485

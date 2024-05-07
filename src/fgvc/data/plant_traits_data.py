@@ -39,12 +39,14 @@ class PlantTraitsDataset(Dataset):
         return_image=True,
         return_labels=True,
         return_metadata=True,
+        response_variation=False,
     ):
         self.df = df
         self.transform = transform
         self.return_image = return_image
         self.return_labels = return_labels
         self.return_metadata = return_metadata
+        self.response_variation = response_variation
         self.class_names = trait_columns
         self.aux_class_names = aux_columns
         self.paths = self.df["path"].values
@@ -52,18 +54,14 @@ class PlantTraitsDataset(Dataset):
         if self.return_labels:
             self.labels = self.df[self.class_names].values
             self.aux_labels = self.df[self.aux_class_names].values
+            self.species = self.df["species"].values
 
         if self.return_metadata:
-            self.metadata = self.df.drop(
-                columns=["id", "path", "split", "species"]
-                + self.class_names
-                + self.aux_class_names,
-                errors="ignore",
-            ).values
+            self.metadata = self.df[self.df.columns[1:164]].values
             # 163 columns
             assert (
                 self.metadata.shape[1] == 163
-            ), "Should be 164 metadata columns, got {self.metadata.shape[1]}"
+            ), "Should be 163 metadata columns, got {self.metadata.shape[1]}"
 
     def __len__(self):
         return len(self.df)
@@ -79,7 +77,14 @@ class PlantTraitsDataset(Dataset):
             data["metadata"] = torch.tensor(self.metadata[idx], dtype=torch.float32)
         if self.return_labels:
             data["label"] = torch.tensor(self.labels[idx], dtype=torch.float32)
+            data["specie"] = torch.tensor(self.species[idx])
             data["aux_label"] = torch.tensor(self.aux_labels[idx], dtype=torch.float32)
+            # apply response variation augmentation with mean and SD
+            if self.response_variation:
+                data["original_label"] = data["label"].clone()
+                data["label"] = torch.clamp(torch.normal(data["label"], data["aux_label"]), min=0)
+                # asser that the label is never NaN
+                assert not torch.isnan(data["label"]).any()
 
         return data
 
@@ -123,6 +128,7 @@ class PlantTraitsDataModule(LightningDataModule):
             self.data_train = PlantTraitsDataset(
                 df=self.df[self.df["split"] == "train"],
                 transform=self.transform,
+                response_variation=False,
             )
         if not self.data_val:
             self.data_val = PlantTraitsDataset(
@@ -146,6 +152,7 @@ class PlantTraitsDataModule(LightningDataModule):
                 shuffle=True,
                 collate_fn=self.collate_fn,
                 persistent_workers=True,
+                drop_last=True,
             )
 
     def val_dataloader(self):
