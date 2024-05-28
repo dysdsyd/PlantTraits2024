@@ -159,7 +159,7 @@ class PlantTraitsDataModule(LightningDataModule):
         if self.data_val is not None:
             return DataLoader(
                 dataset=self.data_val,
-                batch_size=self.hparams.batch_size,
+                batch_size=self.hparams.batch_size*2,
                 num_workers=self.hparams.num_workers,
                 pin_memory=self.hparams.pin_memory,
                 shuffle=False,

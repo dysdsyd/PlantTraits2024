@@ -30,6 +30,8 @@ from lightning import LightningModule
 from typing import Any, Dict, Tuple
 from torchmetrics.regression import R2Score
 from fgvc.models.augmentations import Mixup_transmix
+from functools import partial
+import warnings
 
 
 import timm
@@ -272,18 +274,31 @@ class PlantDINO(nn.Module):
         self,
         num_targets=6,
         train_blocks=4,
+        train_tokens=False,
         ckpt_path=None,
+        reg_head=True,
+        clf_head=True,
+        body="vitb"
     ):
         super(PlantDINO, self).__init__()
         self.le = LabelEncoder()
-        self.train_tokens = True
         self.train_blocks = train_blocks
-        self.body = timm.create_model(
-            "vit_base_patch14_reg4_dinov2.lvd142m",
-            pretrained=True,
-            num_classes=7806,  # initialize since this model is from PlantClef
-            checkpoint_path=ckpt_path,
-        )
+        if body == "vitb":
+            self.body = timm.create_model(
+                "vit_base_patch14_reg4_dinov2.lvd142m",
+                pretrained=True,
+                num_classes=7806,
+                checkpoint_path=ckpt_path,
+            )
+        elif body == "vitl":
+            self.body = timm.create_model(
+                "vit_large_patch14_reg4_dinov2.lvd142m",
+                pretrained=True,
+                num_classes=7806,
+                checkpoint_path=None,
+            )
+        else:
+            raise ValueError("Invalid body type")
         self.body.reset_classifier(num_targets, "avg")
         self.body.global_pool == "map"
         self.body.attn_pool = AttentionPoolLatent(
@@ -292,16 +307,16 @@ class PlantDINO(nn.Module):
             mlp_ratio=self.body.mlp_ratio,
             norm_layer=self.body.norm_layer,
         )
+        self.num_targets = num_targets
 
         for i, layer in enumerate([self.body.patch_embed, self.body.norm]):
             for p in layer.parameters():
                 p.requires_grad = False
 
-        if not self.train_tokens:
+        if not train_tokens:
             self.body.cls_token.requires_grad = False
             self.body.pos_embed.requires_grad = False
             self.body.reg_token.requires_grad = False
-            # self.body.mask_token.requires_grad = False
 
         if self.train_blocks is not None:
             for i in range(0, len(self.body.blocks) - self.train_blocks):
@@ -309,20 +324,27 @@ class PlantDINO(nn.Module):
                     p.requires_grad = False
 
         self.tabular = StructuredSelfAttention(163, 128, num_blocks=4)
+        self.reg_head = reg_head
+        self.clf_head = clf_head
 
-        self.reg = nn.Sequential(
-            nn.Linear(128 + 768, 256),
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(256, num_targets),
-        )
+    def setup_heads(self):
+        ### Regression head ###
+        if self.reg_head:
+            self.reg = nn.Sequential(
+                nn.Linear(128 + self.body.num_features, 256),
+                nn.ReLU(),
+                nn.Dropout(0.4),
+                nn.Linear(256, self.num_targets),
+            )
 
-        self.clf = nn.Sequential(
-            nn.Linear(128 + 768, 256),
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(256, 17396),
-        )
+        ### Classification head ###
+        if self.clf_head:
+            self.clf = nn.Sequential(
+                nn.Linear(128 + self.body.num_features, 256),
+                nn.ReLU(),
+                nn.Dropout(0.4),
+                nn.Linear(256, 17396),
+            )
 
     def forward(self, x):
         x = self.body(x)
@@ -337,10 +359,13 @@ class PlantDINO(nn.Module):
         x_ = self.tabular(x_)
         # tabular features
 
+        reg, clf = None, None
         # cat and regression
         x = torch.cat([x, x_], dim=1)
-        reg = self.reg(x)
-        clf = self.clf(x)
+        if self.reg_head:
+            reg = self.reg(x)
+        if self.clf_head:
+            clf = self.clf(x)
         return reg, clf
 
 
@@ -466,6 +491,161 @@ class TCR2Score(Metric):
         return out
 
 
+def config_dino_yolo_optimizers(
+    model,
+    optimizers: dict,  # Dictionary with keys 'head', 'blocks', 'tokens' and 'patch_embed'
+    schedulers: dict,  # Dictionary with keys corresponding to the optimizers
+    lr_mult: float,
+    restart_lr_mult: float,  # Additional parameter to scale the warmup_start_lr
+) -> tuple[dict]:
+    """
+    Configures multiple optimizers and schedulers for a DINO-based model with a
+    Vision Transformer (VIT) backbone and a custom detection head. This method
+    ensures that non-trainable layers are excluded from receiving optimizers
+    and provides warnings if any non-trainable layers are mistakenly included.
+
+    Args:
+        model: The DINO-based model with a VIT backbone and custom detection head.
+        optimizers (dict): A dictionary containing optimizers for the model,
+                    with keys 'head', 'blocks', 'tokens', and 'patch_embed'.
+        schedulers (dict): A dictionary containing schedulers corresponding to each optimizer.
+        lr_mult (float): Learning rate multiplier for the blocks and tokens. The scaling is applied as follows:
+            - For learning rate: new_lr = lr * (lr_mult ** (num_layers + 1 - layer_id))
+            - For restart learning rate: restart_lr_new = restart_lr * (restart_lr_mult ** (num_layers + 1 - layer_id))
+        restart_lr_mult (float): Learning rate multiplier for the warmup start learning rate.
+
+    Returns:
+        Tuple of dictionaries containing the optimizer and scheduler for each trainable layer.
+    """
+
+    opt = []
+    sched = []
+    ###########################################################
+    # Optimizer and Scheduler for the head
+    ###########################################################
+    head_parameters = [p for p in model.model.model[-1].parameters() if p.requires_grad]
+    if head_parameters:
+        if "head" in optimizers and "head" in schedulers:
+            head_optimizer = optimizers["head"](head_parameters)
+            head_scheduler = schedulers["head"](head_optimizer)
+            opt.append(head_optimizer)
+            sched.append(head_scheduler)
+            print("Added optimizer and scheduler for the head.")
+        else:
+            raise ValueError("Optimizer or scheduler configuration missing for head")
+    else:
+        warnings.warn("head is non-trainable.")
+
+    ###########################################################
+    # Optimizer and Scheduler for blocks
+    ###########################################################
+    model_layers = model.model.model[0].feature_extractor.body.blocks
+    num_layers = len(model_layers)
+
+    # Extract the base learning rate directly from the optimizer configuration
+    lr_base = optimizers.blocks.keywords["lr"]
+    # Extract the warmup start learning rate directly from the scheduler configuration
+    restart_lr_base = schedulers.blocks.keywords["restart_lr"]
+
+    for i, layer in enumerate(model_layers):
+        layer_id = i + 1  # Layer IDs start at 1 for decay calculation
+
+        # Calculate the scaled learning rate multiplier for the current layer
+        lr_scaled = lr_base * (lr_mult ** (num_layers + 1 - layer_id))
+
+        # Calculate the scaled warmup start learning rate multiplier for the current layer
+        restart_lr_scaled = restart_lr_base * (
+            restart_lr_mult ** (num_layers + 1 - layer_id)
+        )
+
+        layer_parameters = [p for p in layer.parameters() if p.requires_grad]
+        if layer_parameters:
+            if "blocks" in optimizers and "blocks" in schedulers:
+                # Create optimizer and scheduler with scaled learning rates
+                current_optimizer = optimizers["blocks"](layer_parameters, lr=lr_scaled)
+                current_scheduler = schedulers["blocks"](
+                    current_optimizer, restart_lr=restart_lr_scaled
+                )
+                opt.append(current_optimizer)
+                sched.append(current_scheduler)
+                print(
+                    f"Added optimizer and scheduler for block {i}, base LR: {lr_base:.8f}, scaled LR: {lr_scaled:.8f}, scaled  restart LR: {restart_lr_scaled:.8f}"
+                )
+            else:
+                raise ValueError(
+                    f"Optimizer or scheduler configuration missing for blocks but block {i} is trainable."
+                )
+        else:
+            warnings.warn(f"block {i} is non-trainable.")
+
+    ###########################################################
+    # Optimizers and Schedulers for tokens
+    ###########################################################
+    token_param_dict = {
+        "cls_token": model.model.model[0].feature_extractor.body.cls_token,
+        "pos_embed": model.model.model[0].feature_extractor.body.pos_embed,
+        "register_tokens": model.model.model[0].feature_extractor.body.register_tokens,
+        "mask_token": model.model.model[0].feature_extractor.body.mask_token,
+    }
+    # Extract the base learning rate directly from the optimizer configuration
+    lr_base = optimizers.tokens.keywords["lr"]
+    # Extract the warmup start learning rate directly from the scheduler configuration
+    restart_lr_base = schedulers.tokens.keywords["restart_lr"]
+    layer_id = 0  # Layer ID for tokens is 0
+    lr_scaled = lr_base * (lr_mult ** (num_layers + 1 - layer_id))
+    restart_lr_scaled = restart_lr_base * (
+        restart_lr_mult ** (num_layers + 1 - layer_id)
+    )
+
+    token_params = []
+    for name, param in token_param_dict.items():
+        if param.requires_grad:
+            token_params.append(param)
+        else:
+            warnings.warn(f"{name} is non-trainable.")
+
+    if len(token_params) > 0:
+        if "tokens" in optimizers and "tokens" in schedulers:
+            token_optimizer = optimizers["tokens"](
+                token_params, lr=lr_scaled
+            )  # Pass parameter wrapped in a list
+            token_scheduler = schedulers["tokens"](
+                token_optimizer, restart_lr=restart_lr_scaled
+            )
+            opt.append(token_optimizer)
+            sched.append(token_scheduler)
+            print(f"Added optimizer and scheduler for tokens")
+        else:
+            raise ValueError(
+                f"Optimizer and scheduler missing for tokens, but tokens are trainable"
+            )
+
+    ###########################################################
+    # Optimizer and Scheduler for patch_embed
+    ###########################################################
+    pe_params = model.model.model[0].feature_extractor.body.patch_embed.parameters()
+    if any(p.requires_grad for p in pe_params):
+        if "patch_embed" in optimizers and "patch_embed" in schedulers:
+            patch_embed_optimizer = optimizers["patch_embed"](pe_params)
+            patch_embed_scheduler = schedulers["patch_embed"](patch_embed_optimizer)
+            opt.append(patch_embed_optimizer)
+            sched.append(patch_embed_scheduler)
+            print("Added optimizer and scheduler for patch_embed.")
+        else:
+            raise ValueError(
+                "Optimizer or scheduler configuration missing for patch_embed"
+            )
+    else:
+        warnings.warn("patch_embed is non-trainable.")
+
+    # Creating dictionary entries for optimizers and schedulers
+    opt_scheduler_dicts = [
+        {"optimizer": o, "lr_scheduler": s} for o, s in zip(opt, sched)
+    ]
+
+    return tuple(opt_scheduler_dicts)
+
+
 class PlantTraitModule(LightningModule):
     def __init__(
         self,
@@ -473,21 +653,109 @@ class PlantTraitModule(LightningModule):
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler,
         num_classes: int = 6,
+        reg_traits: bool = True,
+        clf_traits: bool = True,
+        bld_traits: bool = False,
+        soft_clf_traits: bool = False,
         cutmix_aug: bool = False,
-        blend_traits: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(logger=False)
         self.model = model
+        self.model.reg_head = reg_traits
+        self.model.clf_head = clf_traits or soft_clf_traits
+        self.model.setup_heads()
+        
         self.optimizer = optimizer
         self.scheduler = scheduler
-        # self.scheduler = RepeatedOneCycleLR(self.optimizer)
-        self.criterion = R2Loss()
-        self.similarity = nn.CosineSimilarity(dim=1)
-        self.clf_loss = FocalLoss()
-        # self.loss_weights = nn.Parameter(
-        #     torch.tensor([1.0, 0.5, 0.01], dtype=torch.float32)
-        # )
+
+        self.specie_traits = nn.Parameter(
+            torch.load("/home/ubuntu/FGVC11/data/PlantTrait/specie_traits.pt"),
+            requires_grad=False,
+        )
+        self.dummy_weights = nn.Parameter(
+            torch.tensor(
+                [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                dtype=torch.float32,
+                requires_grad=True,
+            )
+        )
+
+        ##### Regression head #####
+        self.reg_traits = reg_traits
+        if self.reg_traits:
+            self.reg_loss = R2Loss()
+            self.reg_similarity = nn.CosineSimilarity(dim=1)
+            self.train_reg_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+            self.val_reg_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+
+        ##### Classification head #####
+        self.clf_traits = clf_traits
+        if self.clf_traits:
+            self.clf_loss = FocalLoss()
+            self.train_clf_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+            self.val_clf_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+
+        ##### Regression using soft classifier head #####
+        self.soft_clf_traits = soft_clf_traits
+        if self.soft_clf_traits:
+            # self.soft_clf_r2_loss = R2Loss()
+            self.soft_clf_train_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+            self.soft_clf_val_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+
+        # Classification accuracy
+        if self.clf_traits or self.soft_clf_traits:
+            self.train_clf_acc = MulticlassAccuracy(num_classes=17396, topk=10)
+            self.val_clf_acc = MulticlassAccuracy(num_classes=17396, top_k=10)
+
+        ##### Blend traits head #####
+        self.bld_traits = bld_traits
+        if self.bld_traits:
+            if self.reg_traits:
+                self.reg_weight = nn.Parameter(
+                    torch.tensor(
+                        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                        dtype=torch.float32,
+                        requires_grad=True,
+                    )
+                )
+            if self.clf_traits:
+                self.clf_weight = nn.Parameter(
+                    torch.tensor(
+                        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                        dtype=torch.float32,
+                        requires_grad=True,
+                    )
+                )
+            if self.soft_clf_traits:
+                self.soft_clf_weight = nn.Parameter(
+                    torch.tensor(
+                        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                        dtype=torch.float32,
+                        requires_grad=True,
+                    )
+                )
+            self.blend_loss = R2Loss()
+            self.blend_train_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+            self.blend_val_R2 = R2Score(
+                num_outputs=num_classes, multioutput="uniform_average"
+            )
+
+        ##### Cutmix Augmentation #####
         self.cutmix_aug = cutmix_aug
         if self.cutmix_aug:
             self.trans_mix = Mixup_transmix(
@@ -501,65 +769,11 @@ class PlantTraitModule(LightningModule):
                 label_smoothing=0.1,
                 num_classes=17396,
             )
-        self.specie_traits = nn.Parameter(
-            torch.load("/home/ubuntu/FGVC11/data/PlantTrait/specie_traits.pt"),
-            requires_grad=False,
-        )
-
-        self.train_metrics = R2Score(
-            num_outputs=num_classes, multioutput="uniform_average"
-        )
-        self.val_metrics = R2Score(
-            num_outputs=num_classes, multioutput="uniform_average"
-        )
-        self.tc_train_metrics = TCR2Score(num_classes=num_classes)
-        self.tc_val_metrics = TCR2Score(num_classes=num_classes)
-
-        self.train_clf_metrics = MulticlassAccuracy(num_classes=17396, topk=10)
-        self.val_clf_metrics = MulticlassAccuracy(num_classes=17396, top_k=10)
-
-        self.train_clf_R2 = R2Score(
-            num_outputs=num_classes, multioutput="uniform_average"
-        )
-        self.val_clf_R2 = R2Score(
-            num_outputs=num_classes, multioutput="uniform_average"
-        )
-
-        ##### Blend Traits #####
-        self.blend_traits = blend_traits
-        if self.blend_traits:
-            self.reg_weight = nn.Parameter(
-                torch.tensor(
-                    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-                    dtype=torch.float32,
-                    requires_grad=True,
-                )
-            )
-            self.clf_weight = nn.Parameter(
-                torch.tensor(
-                    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-                    dtype=torch.float32,
-                    requires_grad=True,
-                )
-            )
-            # # Initialize the TraitBlender module
-            # self.trait_blender = TraitBlender(
-            #     input_dim=6, output_dim=6, num_blocks=2, dropout_rate=0.2, n_models=2
-            # )
-            self.blend_loss = R2Loss()
-            # self.blend_sim = nn.CosineSimilarity(dim=1)
-            self.blend_train_r2 = R2Score(
-                num_outputs=num_classes, multioutput="uniform_average"
-            )
-            self.blend_val_r2 = R2Score(
-                num_outputs=num_classes, multioutput="uniform_average"
-            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
-        # image, metadata, raw label
         x, x_tab, y_reg, y_clf = (
             batch["image"],
             batch["metadata"],
@@ -577,89 +791,127 @@ class PlantTraitModule(LightningModule):
         assert not torch.isnan(y_enc).any()
         # predicts encoded label
         pred_enc, specie_logits = self.model.forward_alt(x, x_tab)
-        assert not torch.isnan(pred_enc).any()
-        # raw predicted label
-        pred = self.model.le.inverse_transform(pred_enc.clone().detach())
-        assert not torch.isnan(pred).any()
 
-        # encoded/normalized labels for loss calculation
-        reg_loss = self.criterion(pred_enc, y_enc)
-        similarity_inv = (1 - self.similarity(pred_enc, y_enc)).mean()
-        clf_loss = self.clf_loss(specie_logits, y_clf)
-        loss = 1 * reg_loss + 0.4 * similarity_inv + 0.01 * clf_loss
+        total_loss = 0
 
-        pred_specie = torch.argmax(specie_logits, dim=1)
-        pred_specie_traits = self.specie_traits[pred_specie]
+        ##### Regression head #####
+        if self.reg_traits:
+            assert not torch.isnan(pred_enc).any()
+            # raw predicted label
+            pred = self.model.le.inverse_transform(pred_enc.clone().detach())
+            assert not torch.isnan(pred).any()
+            # regression loss
+            reg_loss = self.reg_loss(pred_enc, y_enc)
+            similarity_inv = (1 - self.reg_similarity(pred_enc, y_enc)).mean()
+            total_loss += 1 * reg_loss + 0.4 * similarity_inv
+            # log regression metrics
+            self.log(
+                "train/reg_loss",
+                reg_loss,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+            self.log(
+                "train/similarity_inv",
+                similarity_inv,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+            self.train_reg_R2(pred, y_reg)
+            self.log(
+                "train/reg_r2",
+                self.train_reg_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
-        self.log(
-            "train/reg_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            "train/similarity_inv",
-            similarity_inv,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            "train/clf_loss",
-            clf_loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.train_metrics(pred, y_reg)
-        self.log(
-            "train/r2",
-            self.train_metrics,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        # self.train_clf_metrics(specie_logits, y_clf)
-        # self.log(
-        #     "train/clf_acc",
-        #     self.train_clf_metrics,
-        #     on_step=False,
-        #     on_epoch=True,
-        #     prog_bar=True,
-        #     sync_dist=True,
-        # )
-        self.train_clf_R2(pred_specie_traits, y_reg)
-        self.log(
-            "train/clf_r2",
-            self.train_clf_R2,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.tc_train_metrics.update(pred, y_reg)
+        # log clf accuracy
+        if self.clf_traits or self.soft_clf_traits:
+            self.train_clf_acc(specie_logits, y_clf)
+            self.log(
+                "train/clf_acc",
+                self.train_clf_acc,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
+        ##### Classification head #####
+        if self.clf_traits:
+            pred_specie = torch.argmax(specie_logits, dim=1)
+            pred_specie_traits = self.specie_traits[pred_specie]
+            clf_loss = self.clf_loss(specie_logits, y_clf)
+            total_loss += 0.01 * clf_loss
+            # log metrics
+            self.log(
+                "train/clf_loss",
+                clf_loss,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+            self.train_clf_R2(pred_specie_traits, y_reg)
+            self.log(
+                "train/clf_r2",
+                self.train_clf_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
+        ##### Soft classification as regression head #####
+        if self.soft_clf_traits:
+            specie_probs = F.softmax(specie_logits, dim=1)
+            pred_specie_traits_soft = torch.matmul(specie_probs, self.specie_traits)
+            assert not torch.isnan(pred_specie_traits_soft).any()
+            # soft_clf_r2_loss = self.soft_clf_r2_loss(pred_specie_traits_soft, pred)
+            # total_loss += 0.1 * soft_clf_r2_loss
+            # self.log(
+            #     "train/soft_clf_r2_loss",
+            #     soft_clf_r2_loss,
+            #     on_step=False,
+            #     on_epoch=True,
+            #     prog_bar=True,
+            #     sync_dist=True,
+            # )
+            self.soft_clf_train_R2(pred_specie_traits_soft, y_reg)
+            self.log(
+                "train/soft_clf_r2",
+                self.soft_clf_train_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         #### Blend traits #####
-        if self.blend_traits:
-            blended_traits = (
-                self.reg_weight * pred + self.clf_weight * pred_specie_traits
-            ) / (self.reg_weight + self.clf_weight)
-            
-            blend_loss = self.blend_loss(blended_traits, y_reg)
-            loss += blend_loss
-            # # Blend the predicted traits with the predicted species traits
-            # pred_clf_enc = self.model.le.transform(pred_specie_traits)
-            # blended_traits_enc = self.trait_blender([pred_enc, pred_clf_enc])
-            # assert not torch.isnan(blended_traits_enc).any()
-            # # Calculate the R2 loss between the blended traits and the true traits
-            # blend_loss = self.blend_loss(blended_traits_enc, y_enc)
-            # blend_sim = (1 - self.blend_sim(blended_traits_enc, y_enc)).mean()
-            # loss += 0.1 * blend_loss + 0.05 * blend_sim
+        if self.bld_traits:
+            assert (
+                sum([self.reg_traits, self.clf_traits, self.soft_clf_traits]) > 1
+            ), "At least two heads should be active to blend traits"
+            bld_traits = torch.zeros_like(y_reg)
+            denominator = torch.zeros_like(self.dummy_weights)
+            if self.reg_traits:
+                bld_traits += self.reg_weight * pred
+                denominator += self.reg_weight
+            if self.clf_traits:
+                bld_traits += self.clf_weight * pred_specie_traits
+                denominator += self.clf_weight
+            if self.soft_clf_traits:
+                bld_traits += self.soft_clf_weight * pred_specie_traits_soft
+                denominator += self.soft_clf_weight
+            bld_traits = bld_traits / denominator
+            blend_loss = self.blend_loss(bld_traits, y_reg)
+            total_loss += 0.1 * blend_loss
             self.log(
                 "train/blend_loss",
                 blend_loss,
@@ -668,122 +920,126 @@ class PlantTraitModule(LightningModule):
                 prog_bar=True,
                 sync_dist=True,
             )
-            # self.log(
-            #     "train/blend_sim_inv",
-            #     blend_sim,
-            #     on_step=False,
-            #     on_epoch=True,
-            #     prog_bar=True,
-            #     sync_dist=True,
-            # )
-            # blended_traits = self.model.le.inverse_transform(blended_traits_enc)
-            self.blend_train_r2(blended_traits, y_reg)
+            self.blend_train_R2(bld_traits, y_reg)
             self.log(
                 "train/blend_r2",
-                self.blend_train_r2,
+                self.blend_train_R2,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
                 sync_dist=True,
             )
 
-        self.log(
-            "train/loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        return loss
+        return total_loss
 
-    def on_train_epoch_end(self):
-        for k, v in self.tc_train_metrics.compute().items():
-            self.log(
-                f"train/{k}",
-                v,
-                sync_dist=True,
-            )
-        self.tc_train_metrics.reset()
+    # def on_train_epoch_end(self):
+    # for k, v in self.tc_train_metrics.compute().items():
+    #     self.log(
+    #         f"train/{k}",
+    #         v,
+    #         sync_dist=True,
+    #     )
+    # self.tc_train_metrics.reset()
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
-        # image, metadata, raw label
-        x, x_, y, y_clf = (
+        x, x_tab, y_reg, y_clf = (
             batch["image"],
             batch["metadata"],
             batch["label"],
             batch["specie"],
         )
+        # assert that y is never nan
+        assert not torch.isnan(y_reg).any()
         # encode label
-        # y_enc = self.model.le.transform(y)
+        y_enc = self.model.le.transform(y_reg)
+        assert not torch.isnan(y_enc).any()
         # predicts encoded label
-        pred_enc, specie_logits = self.model.forward_alt(x, x_)
-        # raw predicted label
-        pred = self.model.le.inverse_transform(pred_enc.clone().detach())
+        pred_enc, specie_logits = self.model.forward_alt(x, x_tab)
 
-        pred_specie = torch.argmax(specie_logits, dim=1)
-        pred_specie_traits = self.specie_traits[pred_specie]
+        ##### Regression head #####
+        if self.reg_traits:
+            assert not torch.isnan(pred_enc).any()
+            # raw predicted label
+            pred = self.model.le.inverse_transform(pred_enc.clone().detach())
+            assert not torch.isnan(pred).any()
+            # regression loss
+            self.val_reg_R2(pred, y_reg)
+            self.log(
+                "val/reg_r2",
+                self.val_reg_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
-        self.val_metrics(pred, y)
-        self.log(
-            "val/r2",
-            self.val_metrics,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.val_clf_metrics(specie_logits, y_clf)
-        self.log(
-            "val/clf_acc",
-            self.val_clf_metrics,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.val_clf_R2(pred_specie_traits, y)
-        self.log(
-            "val/clf_r2",
-            self.val_clf_R2,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
+        # log clf accuracy
+        if self.clf_traits or self.soft_clf_traits:
+            self.val_clf_acc(specie_logits, y_clf)
+            self.log(
+                "val/clf_acc",
+                self.val_clf_acc,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
-        self.tc_val_metrics.update(pred, y)
+        ##### Classification head #####
+        if self.clf_traits:
+            pred_specie = torch.argmax(specie_logits, dim=1)
+            pred_specie_traits = self.specie_traits[pred_specie]
+            self.val_clf_R2(pred_specie_traits, y_reg)
+            self.log(
+                "val/clf_r2",
+                self.val_clf_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+
+        ##### Soft classification as regression head #####
+        if self.soft_clf_traits:
+            specie_probs = F.softmax(specie_logits, dim=1)
+            pred_specie_traits_soft = torch.matmul(specie_probs, self.specie_traits)
+            assert not torch.isnan(pred_specie_traits_soft).any()
+            self.soft_clf_val_R2(pred_specie_traits_soft, y_reg)
+            self.log(
+                "val/soft_clf_r2",
+                self.soft_clf_val_R2,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
 
         #### Blend traits #####
-        if self.blend_traits:
-            blended_traits = (
-                self.reg_weight * pred + self.clf_weight * pred_specie_traits
-            ) / (self.reg_weight + self.clf_weight)
-            # pred_clf_enc = self.model.le.transform(pred_specie_traits)
-            # blended_traits_enc = self.trait_blender([pred_enc, pred_clf_enc])
-            # assert not torch.isnan(blended_traits_enc).any()
-            # blended_traits = self.model.le.inverse_transform(blended_traits_enc)
-            self.blend_val_r2(blended_traits, y)
+        if self.bld_traits:
+            assert (
+                sum([self.reg_traits, self.clf_traits, self.soft_clf_traits]) > 1
+            ), "At least two heads should be active to blend traits"
+            bld_traits = torch.zeros_like(y_reg)
+            denominator = torch.zeros_like(self.dummy_weights)
+            if self.reg_traits:
+                bld_traits += self.reg_weight * pred
+                denominator += self.reg_weight
+            if self.clf_traits:
+                bld_traits += self.clf_weight * pred_specie_traits
+                denominator += self.clf_weight
+            if self.soft_clf_traits:
+                bld_traits += self.soft_clf_weight * pred_specie_traits_soft
+                denominator += self.soft_clf_weight
+            bld_traits = bld_traits / denominator
+            self.blend_val_R2(bld_traits, y_reg)
             self.log(
                 "val/blend_r2",
-                self.blend_val_r2,
+                self.blend_val_R2,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
                 sync_dist=True,
             )
-
-    def on_validation_epoch_end(self):
-        for k, v in self.tc_val_metrics.compute().items():
-            self.log(
-                f"val/{k}",
-                v,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-                sync_dist=True,
-            )
-        self.tc_val_metrics.reset()
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         pass

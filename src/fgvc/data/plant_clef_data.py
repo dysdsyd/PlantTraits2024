@@ -385,7 +385,7 @@ class VectorPlantCLEFDataModule(LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         # load training data and splitting into train, val and test
         self.df = pd.read_csv(self.df_path, delimiter=";", escapechar="/")
-        self.df_train = self.df[self.df["learn_tag"] == "train"].reset_index(
+        self.df_train = self.df[self.df["learn_tag"] != "test"].reset_index(
             drop=True
         )  # [:100]
         self.df_val = self.df[self.df["learn_tag"] != "train"].reset_index(
