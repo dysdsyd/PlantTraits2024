@@ -1,28 +1,77 @@
 _target_: fgvc.models.plant_traits_model.PlantTraitModule
+cutmix_aug: False
+reg_traits: True
+clf_traits: True
+bld_traits: True
+soft_clf_traits: True
 
-optimizer:
-  _target_: torch.optim.AdamW
-  _partial_: true
-  lr: 0.0008
-  weight_decay: 0.01
-
-scheduler:
-  _target_: torch.optim.lr_scheduler.OneCycleLR
-  _partial_: true
-  max_lr: 1e-4
-  total_steps: 150
-  pct_start: 0.1
-  anneal_strategy: 'cos'
-  div_factor: 1e1
-  final_div_factor: 1e1
+optimizer_fn:
+    _target_: fgvc.models.plant_traits_model.config_dino_yolo_optimizers
+    _partial_: True
+    lr_mult: 0.8
+    optimizers:
+      head:
+        _target_: torch.optim.AdamW
+        _partial_: true
+        lr: 0.0008
+        weight_decay: 0.01
+      bld:
+        _target_: torch.optim.AdamW
+        _partial_: true
+        lr: 0.0008
+        weight_decay: 0.01
+      blocks:
+        _target_: torch.optim.AdamW
+        _partial_: true
+        lr: 0.0008
+        weight_decay: 0.01
+      tokens:
+        _target_: torch.optim.AdamW
+        _partial_: true
+        lr: 0.0008
+        weight_decay: 0.01
+    schedulers:
+      head:
+        _target_: torch.optim.lr_scheduler.OneCycleLR
+        _partial_: true
+        max_lr: 1e-4
+        total_steps: &steps 120
+        pct_start: 0.2
+        anneal_strategy: 'cos'
+        div_factor: 1e1
+        final_div_factor: 1e1
+      bld:
+        _target_: torch.optim.lr_scheduler.OneCycleLR
+        _partial_: true
+        max_lr: 9e-5
+        total_steps: *steps
+        pct_start: 0.3
+        anneal_strategy: 'cos'
+        div_factor: 1e7
+        final_div_factor: 1e1
+      blocks:
+        _target_: torch.optim.lr_scheduler.OneCycleLR
+        _partial_: true
+        max_lr: 1e-4
+        total_steps: *steps
+        pct_start: 0.3
+        anneal_strategy: 'cos'
+        div_factor: 1e7
+        final_div_factor: 1e1
+      tokens:
+        _target_: torch.optim.lr_scheduler.OneCycleLR
+        _partial_: true
+        max_lr: 1e-4
+        total_steps: *steps
+        pct_start: 0.3
+        anneal_strategy: 'cos'
+        div_factor: 1e7
+        final_div_factor: 1e1
 
 model:
   _target_: fgvc.models.plant_traits_model.PlantDINO
   num_targets: 6
-  train_blocks: 2
-  # ckpt_path: "/home/ubuntu/FGVC11/data/PlantClef/pretrained_models/vit_base_patch14_reg4_dinov2_lvd142m_pc24_onlyclassifier_then_all/model_best.pth.tar"
-
-cutmix_aug: False
-blend_traits: True
-# # compile model for faster training with pytorch 2.0
-# compile: false
+  train_blocks: 6
+  train_tokens: True
+  body: "vitb"
+  ckpt_path: "/home/ubuntu/FGVC11/data/PlantClef/pretrained_models/vit_base_patch14_reg4_dinov2_lvd142m_pc24_onlyclassifier_then_all/model_best.pth.tar"

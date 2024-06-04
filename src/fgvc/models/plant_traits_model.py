@@ -32,6 +32,7 @@ from torchmetrics.regression import R2Score
 from fgvc.models.augmentations import Mixup_transmix
 from functools import partial
 import warnings
+from typing import Any, Callable, Dict, List, Tuple, Optional, Union
 
 
 import timm
@@ -48,63 +49,6 @@ trait_columns = [
 aux_columns = list(map(lambda x: x.replace("mean", "sd"), trait_columns))
 
 
-class RepeatedOneCycleLR(_LRScheduler):
-    def __init__(
-        self,
-        optimizer,
-        max_lr=1e-4,
-        total_steps=150,
-        epochs_per_cycle=30,
-        lr_decay=0.7,
-        last_epoch=-1,
-    ):
-        self.base_max_lr = max_lr
-        self.max_lr = max_lr
-        self.total_steps = total_steps
-        self.epochs_per_cycle = epochs_per_cycle
-        self.lr_decay = lr_decay
-        self.one_cycle_scheduler = None
-        super().__init__(optimizer, last_epoch, verbose=False)
-        self._reset_scheduler(self.last_epoch)
-
-    def _reset_scheduler(self, last_epoch):
-        self.one_cycle_scheduler = OneCycleLR(
-            self.optimizer,
-            max_lr=self.max_lr,
-            total_steps=self.epochs_per_cycle,
-            pct_start=0.3,
-            anneal_strategy="cos",
-            div_factor=25,
-            final_div_factor=1e3,
-            last_epoch=last_epoch,
-        )
-
-    def get_lr(self):
-        if self.last_epoch != self._step_count:
-            self._step_count += 1
-        return self.one_cycle_scheduler.get_lr()
-
-    def step(self, epoch=None):
-        # Increment the internal epoch count only after a cycle completes
-        if self._step_count % self.epochs_per_cycle == 0:
-            self.max_lr *= self.lr_decay
-            self._reset_scheduler(-1)
-        self.one_cycle_scheduler.step()
-
-    def state_dict(self):
-        state = super().state_dict()
-        state["base_max_lr"] = self.base_max_lr
-        state["max_lr"] = self.max_lr
-        state["one_cycle_state_dict"] = self.one_cycle_scheduler.state_dict()
-        return state
-
-    def load_state_dict(self, state_dict):
-        super().load_state_dict(state_dict)
-        self.base_max_lr = state_dict["base_max_lr"]
-        self.max_lr = state_dict["max_lr"]
-        self.one_cycle_scheduler.load_state_dict(state_dict["one_cycle_state_dict"])
-
-
 class LabelEncoder(nn.Module):
     def __init__(self):
         """
@@ -113,13 +57,15 @@ class LabelEncoder(nn.Module):
         super().__init__()
         self.mean = torch.nn.Parameter(
             torch.tensor(
-                [-0.3060, 1.1513, -0.0671, 0.1698, 0.3407, 2.7966], dtype=torch.float32
+                [-0.3060, 1.1513, -0.0671, 0.1698, 0.3407, 2.7966],
+                dtype=torch.float32,
             ),
             requires_grad=False,
         )
         self.std = torch.nn.Parameter(
             torch.tensor(
-                [0.1226, 0.2133, 0.6449, 0.1594, 0.9975, 0.6355], dtype=torch.float32
+                [0.1226, 0.2133, 0.6449, 0.1594, 0.9975, 0.6355],
+                dtype=torch.float32,
             ),
             requires_grad=False,
         )
@@ -152,72 +98,6 @@ class LabelEncoder(nn.Module):
         """
         with torch.no_grad():
             original_X = 10 ** (X * self.std + self.mean)
-        return original_X
-
-
-class MinMaxLabelEncoder(nn.Module):
-    def __init__(self):
-        """
-        Initialize the encoder with specific minimum and maximum values.
-        """
-        super().__init__()
-        self.min = nn.Parameter(
-            torch.tensor(
-                [
-                    -0.5424844389045688,
-                    0.6484638238914191,
-                    -1.1240372205951517,
-                    -0.10589238793491958,
-                    -1.5553251870196876,
-                    1.534919701938955,
-                ],
-                dtype=torch.float32,
-            ),
-            requires_grad=False,
-        )
-        self.max = nn.Parameter(
-            torch.tensor(
-                [
-                    -0.08311075653326473,
-                    1.541786160427708,
-                    1.3064602333081552,
-                    0.49182749638768486,
-                    2.495978047145072,
-                    3.995379650131168,
-                ],
-                dtype=torch.float32,
-            ),
-            requires_grad=False,
-        )
-
-    def transform(self, X):
-        """
-        Transform the labels by first taking their log scale and then applying
-        Min-Max scaling.
-
-        Parameters:
-        - X: Input tensor of size n x c.
-
-        Returns:
-        - Scaled tensor of size n x c.
-        """
-        with torch.no_grad():
-            log_X = torch.log10(X + 1e-6)
-            scaled_X = (log_X - self.min) / (self.max - self.min)
-        return scaled_X
-
-    def inverse_transform(self, X):
-        """
-        Revert the scaled labels back to their original scale.
-
-        Parameters:
-        - X: Scaled tensor of size n x c.
-
-        Returns:
-        - Original labels tensor of size n x c.
-        """
-        with torch.no_grad():
-            original_X = 10 ** (X * (self.max - self.min) + self.min)
         return original_X
 
 
@@ -278,7 +158,7 @@ class PlantDINO(nn.Module):
         ckpt_path=None,
         reg_head=True,
         clf_head=True,
-        body="vitb"
+        body="vitb",
     ):
         super(PlantDINO, self).__init__()
         self.le = LabelEncoder()
@@ -293,6 +173,13 @@ class PlantDINO(nn.Module):
         elif body == "vitl":
             self.body = timm.create_model(
                 "vit_large_patch14_reg4_dinov2.lvd142m",
+                pretrained=True,
+                num_classes=7806,
+                checkpoint_path=None,
+            )
+        elif body == "vitg":
+            self.body = timm.create_model(
+                "vit_giant_patch14_reg4_dinov2.lvd142m",
                 pretrained=True,
                 num_classes=7806,
                 checkpoint_path=None,
@@ -326,6 +213,7 @@ class PlantDINO(nn.Module):
         self.tabular = StructuredSelfAttention(163, 128, num_blocks=4)
         self.reg_head = reg_head
         self.clf_head = clf_head
+        del self.body.head
 
     def setup_heads(self):
         ### Regression head ###
@@ -367,36 +255,6 @@ class PlantDINO(nn.Module):
         if self.clf_head:
             clf = self.clf(x)
         return reg, clf
-
-
-class TraitBlender(nn.Module):
-    def __init__(
-        self, input_dim, output_dim, num_blocks=1, n_models=2, dropout_rate=0.1
-    ):
-        super(TraitBlender, self).__init__()
-        self.n_models = n_models
-        # Adjust the input dimension based on the number of models (traits sets)
-        self.self_attention = StructuredSelfAttention(
-            input_dim * n_models, output_dim, num_blocks
-        )
-        self.dropout = nn.Dropout(dropout_rate)
-        self.final_layer = nn.Linear(output_dim, input_dim)
-
-    def forward(self, traits_list):
-        # Ensure we have the correct number of trait sets
-        if len(traits_list) != self.n_models:
-            raise ValueError(f"Expected {self.n_models}, but got {len(traits_list)}")
-
-        # Concatenate the input traits along the feature dimension
-        combined_input = torch.cat(traits_list, dim=1)
-
-        # Process combined input through the Structured Self-Attention
-        attention_output = self.self_attention(combined_input)
-
-        # Apply dropout and pass through the final linear layer
-        dropped_output = self.dropout(attention_output)
-        blended_traits = self.final_layer(dropped_output)
-        return blended_traits
 
 
 class R2Loss(nn.Module):
@@ -441,135 +299,99 @@ class FocalLoss(nn.Module):
             return F_loss
 
 
-class TCR2Score(Metric):
-    def __init__(self, num_classes=6):
-        super().__init__(dist_sync_on_step=False)
-        self.num_classes = num_classes
-        # We'll store sums and counts for each class to compute individual R2 scores
-        self.add_state(
-            "sum_squared_errors", default=torch.zeros(num_classes), dist_reduce_fx="sum"
-        )
-        self.add_state(
-            "sum_squared_totals", default=torch.zeros(num_classes), dist_reduce_fx="sum"
-        )
-        self.add_state("count", default=torch.zeros(num_classes), dist_reduce_fx="sum")
-
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
-        # preds and target shape: [batch_size, num_classes]
-        if preds.shape[1] != self.num_classes:
-            raise ValueError(
-                f"Expected preds to have shape [batch_size, num_classes], got {preds.shape}"
-            )
-        if target.shape[1] != self.num_classes:
-            raise ValueError(
-                f"Expected target to have shape [batch_size, num_classes], got {target.shape}"
-            )
-
-        errors = target - preds
-        squared_errors = torch.square(errors)
-        self.sum_squared_errors += torch.sum(squared_errors, dim=0)
-
-        mean_target = torch.mean(target, dim=0)
-        totals = target - mean_target
-        squared_totals = torch.square(totals)
-        self.sum_squared_totals += torch.sum(squared_totals, dim=0)
-
-        self.count += target.size(0)
-
-    def compute(self):
-        mean_squared_errors = self.sum_squared_errors / self.count
-        mean_squared_totals = self.sum_squared_totals / self.count
-        # R2 score for each class
-        r2_scores = 1 - (mean_squared_errors / (mean_squared_totals + 1e-6))
-        # Mean R2 score across all classes
-        mean_r2_score = torch.mean(r2_scores)
-        out = {
-            f"TC_r2_{trait_columns[i]}": r2_scores[i].item()
-            for i in range(self.num_classes)
-        }
-        out["TC_r2"] = mean_r2_score.item()
-        return out
-
-
 def config_dino_yolo_optimizers(
     model,
-    optimizers: dict,  # Dictionary with keys 'head', 'blocks', 'tokens' and 'patch_embed'
-    schedulers: dict,  # Dictionary with keys corresponding to the optimizers
+    optimizers: dict,
+    schedulers: dict,
     lr_mult: float,
-    restart_lr_mult: float,  # Additional parameter to scale the warmup_start_lr
 ) -> tuple[dict]:
-    """
-    Configures multiple optimizers and schedulers for a DINO-based model with a
-    Vision Transformer (VIT) backbone and a custom detection head. This method
-    ensures that non-trainable layers are excluded from receiving optimizers
-    and provides warnings if any non-trainable layers are mistakenly included.
-
-    Args:
-        model: The DINO-based model with a VIT backbone and custom detection head.
-        optimizers (dict): A dictionary containing optimizers for the model,
-                    with keys 'head', 'blocks', 'tokens', and 'patch_embed'.
-        schedulers (dict): A dictionary containing schedulers corresponding to each optimizer.
-        lr_mult (float): Learning rate multiplier for the blocks and tokens. The scaling is applied as follows:
-            - For learning rate: new_lr = lr * (lr_mult ** (num_layers + 1 - layer_id))
-            - For restart learning rate: restart_lr_new = restart_lr * (restart_lr_mult ** (num_layers + 1 - layer_id))
-        restart_lr_mult (float): Learning rate multiplier for the warmup start learning rate.
-
-    Returns:
-        Tuple of dictionaries containing the optimizer and scheduler for each trainable layer.
-    """
-
+    total_params = 0
     opt = []
     sched = []
     ###########################################################
-    # Optimizer and Scheduler for the head
+    # Optimizer and Scheduler for the reg ,clf head
     ###########################################################
-    head_parameters = [p for p in model.model.model[-1].parameters() if p.requires_grad]
+    head_parameters = []
+    if model.reg_traits:
+        head_parameters += [p for p in model.model.reg.parameters() if p.requires_grad]
+    if model.clf_traits:
+        head_parameters += [p for p in model.model.clf.parameters() if p.requires_grad]
+
+    head_parameters += [
+        p for p in model.model.body.attn_pool.parameters() if p.requires_grad
+    ]
+
+    head_parameters += [p for p in model.model.tabular.parameters() if p.requires_grad]
     if head_parameters:
         if "head" in optimizers and "head" in schedulers:
             head_optimizer = optimizers["head"](head_parameters)
             head_scheduler = schedulers["head"](head_optimizer)
             opt.append(head_optimizer)
             sched.append(head_scheduler)
-            print("Added optimizer and scheduler for the head.")
+            total_params += sum([p.numel() for p in head_parameters])
+            print("Added optimizer and scheduler for the head and tabular data.")
         else:
-            raise ValueError("Optimizer or scheduler configuration missing for head")
+            raise ValueError(
+                "Optimizer or scheduler configuration missing for head and tabular data."
+            )
     else:
-        warnings.warn("head is non-trainable.")
+        warnings.warn("head and tab are non-trainable.")
+
+    ###########################################################
+    # Optimizer and Scheduler for blending weights
+    ###########################################################
+    bld_parameters = []
+    if model.bld_traits:
+        if model.reg_traits and model.reg_weight.requires_grad:
+            bld_parameters += [model.reg_weight]
+        if model.clf_traits and model.clf_weight.requires_grad:
+            bld_parameters += [model.clf_weight]
+        if model.soft_clf_traits and model.soft_clf_weight.requires_grad:
+            bld_parameters += [model.soft_clf_weight]
+
+        if bld_parameters:
+            if "bld" in optimizers and "bld" in schedulers:
+                bld_optimizer = optimizers["bld"](bld_parameters)
+                bld_scheduler = schedulers["bld"](bld_optimizer)
+                opt.append(bld_optimizer)
+                sched.append(bld_scheduler)
+                print("Added optimizer and scheduler for the blending weights.")
+                total_params += sum([p.numel() for p in bld_parameters])
+            else:
+                raise ValueError(
+                    "Optimizer or scheduler configuration missing for blending weights."
+                )
+        else:
+            warnings.warn("blending weights are non-trainable.")
 
     ###########################################################
     # Optimizer and Scheduler for blocks
     ###########################################################
-    model_layers = model.model.model[0].feature_extractor.body.blocks
+    model_layers = model.model.body.blocks
     num_layers = len(model_layers)
 
-    # Extract the base learning rate directly from the optimizer configuration
-    lr_base = optimizers.blocks.keywords["lr"]
     # Extract the warmup start learning rate directly from the scheduler configuration
-    restart_lr_base = schedulers.blocks.keywords["restart_lr"]
+    max_lr = schedulers.blocks.keywords["max_lr"]
 
     for i, layer in enumerate(model_layers):
         layer_id = i + 1  # Layer IDs start at 1 for decay calculation
 
         # Calculate the scaled learning rate multiplier for the current layer
-        lr_scaled = lr_base * (lr_mult ** (num_layers + 1 - layer_id))
-
-        # Calculate the scaled warmup start learning rate multiplier for the current layer
-        restart_lr_scaled = restart_lr_base * (
-            restart_lr_mult ** (num_layers + 1 - layer_id)
-        )
+        max_lr_scaled = max_lr * (lr_mult ** (num_layers + 1 - layer_id))
 
         layer_parameters = [p for p in layer.parameters() if p.requires_grad]
         if layer_parameters:
             if "blocks" in optimizers and "blocks" in schedulers:
                 # Create optimizer and scheduler with scaled learning rates
-                current_optimizer = optimizers["blocks"](layer_parameters, lr=lr_scaled)
+                current_optimizer = optimizers["blocks"](layer_parameters)
                 current_scheduler = schedulers["blocks"](
-                    current_optimizer, restart_lr=restart_lr_scaled
+                    current_optimizer, max_lr=max_lr_scaled
                 )
                 opt.append(current_optimizer)
                 sched.append(current_scheduler)
+                total_params += sum([p.numel() for p in layer_parameters])
                 print(
-                    f"Added optimizer and scheduler for block {i}, base LR: {lr_base:.8f}, scaled LR: {lr_scaled:.8f}, scaled  restart LR: {restart_lr_scaled:.8f}"
+                    f"Added optimizer and scheduler for block {i}, max LR: {max_lr:.8f}, scaled LR: {max_lr_scaled:.8f}"
                 )
             else:
                 raise ValueError(
@@ -582,20 +404,14 @@ def config_dino_yolo_optimizers(
     # Optimizers and Schedulers for tokens
     ###########################################################
     token_param_dict = {
-        "cls_token": model.model.model[0].feature_extractor.body.cls_token,
-        "pos_embed": model.model.model[0].feature_extractor.body.pos_embed,
-        "register_tokens": model.model.model[0].feature_extractor.body.register_tokens,
-        "mask_token": model.model.model[0].feature_extractor.body.mask_token,
+        "cls_token": model.model.body.cls_token,
+        "pos_embed": model.model.body.pos_embed,
+        "reg_token": model.model.body.reg_token,
     }
-    # Extract the base learning rate directly from the optimizer configuration
-    lr_base = optimizers.tokens.keywords["lr"]
     # Extract the warmup start learning rate directly from the scheduler configuration
-    restart_lr_base = schedulers.tokens.keywords["restart_lr"]
-    layer_id = 0  # Layer ID for tokens is 0
-    lr_scaled = lr_base * (lr_mult ** (num_layers + 1 - layer_id))
-    restart_lr_scaled = restart_lr_base * (
-        restart_lr_mult ** (num_layers + 1 - layer_id)
-    )
+    max_lr = schedulers.tokens.keywords["max_lr"]
+    layer_id = 6  # Layer ID for tokens is 0
+    max_lr_scaled = max_lr * (lr_mult ** (num_layers + 1 - layer_id))
 
     token_params = []
     for name, param in token_param_dict.items():
@@ -607,42 +423,25 @@ def config_dino_yolo_optimizers(
     if len(token_params) > 0:
         if "tokens" in optimizers and "tokens" in schedulers:
             token_optimizer = optimizers["tokens"](
-                token_params, lr=lr_scaled
+                token_params
             )  # Pass parameter wrapped in a list
             token_scheduler = schedulers["tokens"](
-                token_optimizer, restart_lr=restart_lr_scaled
+                token_optimizer, max_lr=max_lr_scaled
             )
             opt.append(token_optimizer)
             sched.append(token_scheduler)
             print(f"Added optimizer and scheduler for tokens")
+            total_params += sum([p.numel() for p in token_params])
         else:
             raise ValueError(
                 f"Optimizer and scheduler missing for tokens, but tokens are trainable"
             )
 
-    ###########################################################
-    # Optimizer and Scheduler for patch_embed
-    ###########################################################
-    pe_params = model.model.model[0].feature_extractor.body.patch_embed.parameters()
-    if any(p.requires_grad for p in pe_params):
-        if "patch_embed" in optimizers and "patch_embed" in schedulers:
-            patch_embed_optimizer = optimizers["patch_embed"](pe_params)
-            patch_embed_scheduler = schedulers["patch_embed"](patch_embed_optimizer)
-            opt.append(patch_embed_optimizer)
-            sched.append(patch_embed_scheduler)
-            print("Added optimizer and scheduler for patch_embed.")
-        else:
-            raise ValueError(
-                "Optimizer or scheduler configuration missing for patch_embed"
-            )
-    else:
-        warnings.warn("patch_embed is non-trainable.")
-
     # Creating dictionary entries for optimizers and schedulers
     opt_scheduler_dicts = [
         {"optimizer": o, "lr_scheduler": s} for o, s in zip(opt, sched)
     ]
-
+    print(f"Total trainable parameters: {total_params}")
     return tuple(opt_scheduler_dicts)
 
 
@@ -650,8 +449,7 @@ class PlantTraitModule(LightningModule):
     def __init__(
         self,
         model: nn.Module,
-        optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler,
+        optimizer_fn: Callable = None,
         num_classes: int = 6,
         reg_traits: bool = True,
         clf_traits: bool = True,
@@ -665,9 +463,9 @@ class PlantTraitModule(LightningModule):
         self.model.reg_head = reg_traits
         self.model.clf_head = clf_traits or soft_clf_traits
         self.model.setup_heads()
-        
-        self.optimizer = optimizer
-        self.scheduler = scheduler
+
+        self.optimizer_fn = optimizer_fn
+        self.automatic_optimization = False
 
         self.specie_traits = nn.Parameter(
             torch.load("/home/ubuntu/FGVC11/data/PlantTrait/specie_traits.pt"),
@@ -677,8 +475,8 @@ class PlantTraitModule(LightningModule):
             torch.tensor(
                 [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                 dtype=torch.float32,
-                requires_grad=True,
-            )
+            ),
+            requires_grad=False,
         )
 
         ##### Regression head #####
@@ -707,7 +505,6 @@ class PlantTraitModule(LightningModule):
         ##### Regression using soft classifier head #####
         self.soft_clf_traits = soft_clf_traits
         if self.soft_clf_traits:
-            # self.soft_clf_r2_loss = R2Loss()
             self.soft_clf_train_R2 = R2Score(
                 num_outputs=num_classes, multioutput="uniform_average"
             )
@@ -728,24 +525,24 @@ class PlantTraitModule(LightningModule):
                     torch.tensor(
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
-                        requires_grad=True,
-                    )
+                    ),
+                    requires_grad=False,
                 )
             if self.clf_traits:
                 self.clf_weight = nn.Parameter(
                     torch.tensor(
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
-                        requires_grad=True,
-                    )
+                    ),
+                    requires_grad=False,
                 )
             if self.soft_clf_traits:
                 self.soft_clf_weight = nn.Parameter(
                     torch.tensor(
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
-                        requires_grad=True,
-                    )
+                    ),
+                    requires_grad=False,
                 )
             self.blend_loss = R2Loss()
             self.blend_train_R2 = R2Score(
@@ -774,6 +571,16 @@ class PlantTraitModule(LightningModule):
         return self.model(x)
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
+        assert (
+            self.automatic_optimization == False
+        ), "Manual optimization is not enabled"
+
+        # zero grad for all optimizers
+        opt = self.optimizers()
+        for o in opt:
+            o.zero_grad()
+
+        # get batch
         x, x_tab, y_reg, y_clf = (
             batch["image"],
             batch["metadata"],
@@ -873,16 +680,6 @@ class PlantTraitModule(LightningModule):
             specie_probs = F.softmax(specie_logits, dim=1)
             pred_specie_traits_soft = torch.matmul(specie_probs, self.specie_traits)
             assert not torch.isnan(pred_specie_traits_soft).any()
-            # soft_clf_r2_loss = self.soft_clf_r2_loss(pred_specie_traits_soft, pred)
-            # total_loss += 0.1 * soft_clf_r2_loss
-            # self.log(
-            #     "train/soft_clf_r2_loss",
-            #     soft_clf_r2_loss,
-            #     on_step=False,
-            #     on_epoch=True,
-            #     prog_bar=True,
-            #     sync_dist=True,
-            # )
             self.soft_clf_train_R2(pred_specie_traits_soft, y_reg)
             self.log(
                 "train/soft_clf_r2",
@@ -930,16 +727,14 @@ class PlantTraitModule(LightningModule):
                 sync_dist=True,
             )
 
+        self.manual_backward(total_loss)
+        for optimizer in self.optimizers():
+            optimizer.step()
         return total_loss
 
-    # def on_train_epoch_end(self):
-    # for k, v in self.tc_train_metrics.compute().items():
-    #     self.log(
-    #         f"train/{k}",
-    #         v,
-    #         sync_dist=True,
-    #     )
-    # self.tc_train_metrics.reset()
+    def on_train_epoch_end(self) -> None:
+        for i, scheduler in enumerate(self.lr_schedulers()):
+            scheduler.step()
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int):
         x, x_tab, y_reg, y_clf = (
@@ -1045,16 +840,5 @@ class PlantTraitModule(LightningModule):
         pass
 
     def configure_optimizers(self) -> Dict[str, Any]:
-        optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
-        if self.hparams.scheduler is not None:
-            scheduler = self.hparams.scheduler(optimizer=optimizer)
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "monitor": "train/loss",
-                    "interval": "epoch",
-                    "frequency": 1,
-                },
-            }
-        return {"optimizer": optimizer}
+        d = self.optimizer_fn(self)
+        return d

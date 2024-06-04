@@ -1,6 +1,0 @@
-_target_: fgvc.data.plant_clef_data.VectorPlantCLEFDataModule
-df_path: "/home/ubuntu/FGVC11/data/PlantClef/PlantCLEFTrainLQ.csv"
-label_encoder: "/home/ubuntu/FGVC11/data/PlantClef/le.pkl"
-batch_size: 16
-num_workers: 8
-pin_memory: True
