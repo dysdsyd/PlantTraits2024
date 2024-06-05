@@ -5,7 +5,7 @@ opencv-python
 pandas
 randomname
 tenacity
-timm==0.9.5
+timm==1.0.3
 wandb
 tqdm
 
