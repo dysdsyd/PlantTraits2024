@@ -17,7 +17,7 @@ xformers==0.0.18
 
 # --------- pytorch --------- #
 torch==2.0.0
-torchvision==0.15.1
+torchvision==0.18.0
 lightning @ git+https://github.com/Lightning-AI/lightning@1307b605e858560a1b93bfbbbbe039e5beb9e977#egg=lightning
 torchmetrics==0.11.4
 
