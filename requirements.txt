@@ -28,7 +28,7 @@ hydra-optuna-sweeper==1.2.0
 
 # --------- loggers --------- #
 # wandb
-neptune==1.2.0
+neptune==1.10.4
 # mlflow
 # comet-ml
 
