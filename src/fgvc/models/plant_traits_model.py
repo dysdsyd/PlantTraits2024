@@ -526,7 +526,7 @@ class PlantTraitModule(LightningModule):
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
                     ),
-                    requires_grad=False,
+                    requires_grad=True,
                 )
             if self.clf_traits:
                 self.clf_weight = nn.Parameter(
@@ -534,7 +534,7 @@ class PlantTraitModule(LightningModule):
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
                     ),
-                    requires_grad=False,
+                    requires_grad=True,
                 )
             if self.soft_clf_traits:
                 self.soft_clf_weight = nn.Parameter(
@@ -542,7 +542,7 @@ class PlantTraitModule(LightningModule):
                         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                         dtype=torch.float32,
                     ),
-                    requires_grad=False,
+                    requires_grad=True,
                 )
             self.blend_loss = R2Loss()
             self.blend_train_R2 = R2Score(
