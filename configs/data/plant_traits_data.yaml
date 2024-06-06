@@ -1,5 +1,4 @@
 _target_: fgvc.data.plant_traits_data.PlantTraitsDataModule
-# df_path: '/home/ubuntu/FGVC11/data/PlantTrait/df_processed_upsampled.csv'
 df_path: '/home/ubuntu/FGVC11/data/PlantTrait/df_processed.csv'
 
 
