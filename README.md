@@ -1,6 +1,7 @@
 # PlantTraits2024
 Welcome to the PlantTraits2024 repository! This project won 1st place in the PlantTraits2024 contest. Below are detailed instructions to set up, train, and customize the project. Big thanks to the authors of all kernels & posts, which were of great inspiration and some features were derived based on them.  
 Kaggle Profile: [Daft Vader](https://www.kaggle.com/syeddanish)
+
 Kaggle Solution: [Link](https://www.kaggle.com/competitions/planttraits2024/discussion/510393) 
 
 <p align="center">
