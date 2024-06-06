@@ -1,11 +1,10 @@
 # PlantTraits2024
+Welcome to the PlantTraits2024 repository! This project won 1st place in the PlantTraits2024 contest. Below are detailed instructions to set up, train, and customize the project. Big thanks to the authors of all kernels & posts, which were of great inspiration and some features were derived based on them.  
+Kaggle Profile : [Daft Vader](https://www.kaggle.com/syeddanish)
+
 <p align="center">
   <img src="https://github.com/dysdsyd/PlantTraits2024/assets/9487316/7131c90c-6dac-4536-8fe6-f55532fb029c" alt="Hydra-like Structure" width="200" height="200" style="border-radius: 50%; object-fit: cover;">
 </p>
-
-
-Welcome to the PlantTraits2024 repository! This project won 1st place in the PlantTraits2024 contest. Below are detailed instructions to set up, train, and customize the project. Big thanks to the authors of all kernels & posts, which were of great inspiration and some features were derived based on them.  
-Kaggle Profile : [Daft Vader](https://www.kaggle.com/syeddanish)
 
 ## Installation
 #### Step 1 - Install Your Virtual Environment Manager
