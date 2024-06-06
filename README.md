@@ -61,6 +61,10 @@ To customize various aspects of the training process, modify the following confi
 2. **Model Customization:** Modify `configs/model/plant_traits_model.yaml` to adjust model configurations.
 3. **Experiment Customization:** Modify `configs/experiment/plant_traits.yaml` to change overall experiment settings.
 
+### Modifying Source Code
+1. **Dataset Modification:** Modify `src/fgvc/data/plant_traits_data.py`
+2. **Model Customization:** Modify `src/fgvc/models/plant_traits_model.py`
+
 ## Acknowledgement
 This experimentation template is generated from [ashleve/lightning-hydra-template](https://github.com/ashleve/lightning-hydra-template). For more details about the template, please refer to their documentation.
 
