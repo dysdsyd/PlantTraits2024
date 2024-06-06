@@ -12,7 +12,7 @@ tqdm
 # --------- dinov2 --------- #
 --extra-index-url https://pypi.nvidia.com
 cuml-cu11==23.12.0
-dinov2==0.0.1.dev0
+dinov2==0.0.1.dev2
 xformers==0.0.18
 
 # --------- pytorch --------- #
