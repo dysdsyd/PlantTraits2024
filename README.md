@@ -67,6 +67,8 @@ To customize various aspects of the training process, modify the following confi
 - **Model Customization:** Modify `src/fgvc/models/plant_traits_model.py`
 
 ## Acknowledgement
+Thank you to [TerraClear](https://www.terraclear.com/) and its incredible team for their support and help with brainstorming ideas. 
+
 This experimentation template is generated from [ashleve/lightning-hydra-template](https://github.com/ashleve/lightning-hydra-template). For more details about the template, please refer to their documentation.
 
 Thank you for using PlantTraits2024! If you have any questions or encounter issues, please feel free to open an issue or contact the maintainers.
